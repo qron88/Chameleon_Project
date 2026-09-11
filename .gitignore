@@ -14,6 +14,10 @@ Certificates/
 *_Patched_*/
 Display.Driver/
 
+# Local editor / tooling state. Per-machine and regenerated on demand, so it is ignored here
+# rather than relying on each contributor having a matching global ignore rule.
+.claude/settings.local.json
+
 # Windows shell cruft.
 Thumbs.db
 desktop.ini
