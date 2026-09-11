@@ -29,8 +29,7 @@ therefore installs only on a machine that trusts that certificate and has Window
 mode on - see [Trusting the certificate](#trusting-the-certificate).
 
 `Scripts\whitelist.json` is the data-driven form of those 61 PCI ID whitelist entries (device ID,
-subsystem ID, description, and a captured INF section body to use as a template), originally
-derived by diffing a stock `Original_Nvidia_595.79...` package against a hand-patched one.
+subsystem ID, description, and a captured INF section body to use as a template).
 
 ## Project layout
 
