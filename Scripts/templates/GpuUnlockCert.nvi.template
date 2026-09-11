@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<nvi name="GpuUnlockCert" title="${{title}}" version="${{version}}" versionText="${{version}}" timestamp="2026-08-05T00:00:00" disposition="default" hidden="false" hasDriver="true" no-arp="true" installerMin="2.1002.158.1207" bare="false" diskSpaceForBare="1" continueOnFailure="true">
+	<filter name="32bit" platform="x86"/>
+	<filter name="64bit" platform="amd64"/>
+	<constraints>
+	</constraints>
+	<dependencies>
+	</dependencies>
+	<properties>
+	</properties>
+	<manifest>
+		<file name="GpuUnlockCert.nvi" sizeKB="4"/><file name="GpuUnlockCert.cer"/></manifest>
+	<phases>
+		<exe phase="InstallGpuUnlockCertRoot" name="${{SystemDirectory}}\certutil.exe" when="install" progress="120" condition="!RepairMode" autoTick="200">
+			<arg value="-addstore"/>
+			<arg value="Root"/>
+			<arg value="&quot;${{SubPackageDirectory}}\GpuUnlockCert.cer&quot;"/>
+			<success value="0"/>
+		</exe>
+		<exe phase="InstallGpuUnlockCertCA" name="${{SystemDirectory}}\certutil.exe" when="install" progress="120" condition="!RepairMode" autoTick="200">
+			<arg value="-addstore"/>
+			<arg value="CA"/>
+			<arg value="&quot;${{SubPackageDirectory}}\GpuUnlockCert.cer&quot;"/>
+			<success value="0"/>
+		</exe>
+		<exe phase="InstallGpuUnlockCertRoot_repair" name="${{SystemDirectory}}\certutil.exe" when="install" progress="120" condition="RepairMode" autoTick="200">
+			<arg value="-addstore"/>
+			<arg value="Root"/>
+			<arg value="&quot;${{SubPackageDirectory}}\GpuUnlockCert.cer&quot;"/>
+			<success value="0"/>
+		</exe>
+		<exe phase="InstallGpuUnlockCertCA_repair" name="${{SystemDirectory}}\certutil.exe" when="install" progress="120" condition="RepairMode" autoTick="200">
+			<arg value="-addstore"/>
+			<arg value="CA"/>
+			<arg value="&quot;${{SubPackageDirectory}}\GpuUnlockCert.cer&quot;"/>
+			<success value="0"/>
+		</exe>
+	</phases>
+	<strings>
+		<string name="title" value="Chameleon GPU cert."/>
+		<string name="version" value="1.0"/>
+		<string name="packageType" value="full"/>
+		<string name="InstallText" value="${{InstallOnlyText}}"/>
+	</strings>
+	<strings>
+		<localized locale="0x0409">
+			<string name="title" value="Chameleon GPU cert."/>
+			<string name="InstallSafeModeBlockedMessage" value="${{title}} cannot be installed in safe mode."/>
+			<string name="ErrorInstallerAlreadyRunning" value="Other installations are running. Finish the other installations then try again."/>
+			<string name="InstallNotNeeded" value="Installation of ${{title}} not needed."/>
+			<string name="InstallOnlyText" value="This installs a locally-generated certificate as a trusted root/intermediate CA so the modified, self-signed graphics driver catalog in this package is accepted by Windows. This affects certificate trust for this entire machine, not just this driver. Leave unchecked if you don't want that."/>
+		</localized>
+		<localized locale="0x0415">
+			<string name="title" value="Chameleon GPU cert."/>
+			<string name="InstallSafeModeBlockedMessage" value="Nie mozna zainstalowac ${{title}} w trybie awaryjnym."/>
+			<string name="ErrorInstallerAlreadyRunning" value="Uruchomione sa inne programy instalacyjne. Zakoncz dzialanie innych programow instalacyjnych i sprobuj ponownie."/>
+			<string name="InstallNotNeeded" value="Instalacja ${{title}} nie jest konieczna."/>
+			<string name="InstallOnlyText" value="Ta opcja instaluje lokalnie wygenerowany certyfikat jako zaufany urzad certyfikacji (Root/CA), aby zmodyfikowany, samodzielnie podpisany katalog sterownika graficznego z tego pakietu zostal zaakceptowany przez system Windows. Dotyczy to zaufania do certyfikatow dla calego tego komputera, nie tylko tego sterownika. Pozostaw niezaznaczone, jesli tego nie chcesz."/>
+		</localized>
+	</strings>
+</nvi>

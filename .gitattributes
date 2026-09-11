@@ -1,0 +1,17 @@
+# Normalise text to LF in the repository, and check it out as CRLF on Windows. Everything here is
+# Windows PowerShell and a C# file built by csc.exe, so a working copy should always be CRLF.
+* text=auto eol=crlf
+
+# Binaries must never be line-ending converted. Chameleon-Patcher.exe is committed deliberately,
+# and a text conversion pass would corrupt it - as it would the icon and logo artwork.
+*.exe  binary
+*.dll  binary
+*.ico  binary
+*.png  binary
+*.jpg  binary
+*.pfx  binary
+*.cer  binary
+
+# Driver INFs and NVIDIA's own manifests, if any are ever committed as fixtures.
+*.inf  text eol=crlf
+*.nvi  text eol=crlf

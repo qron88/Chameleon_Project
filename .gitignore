@@ -1,0 +1,25 @@
+# Patch logs. One per run, and each carries this machine's name, user account, local paths and
+# the thumbprint of the certificate that signed the package.
+Logs/
+
+# Signing material. DriverPatchSigning.cer is a personal signing identity, and a .pfx - which
+# only exists if New-DriverSigningCert.ps1 was run with -Exportable - holds the private key.
+# Neither belongs in a public repository.
+Certificates/
+*.pfx
+*.cer
+
+# Driver packages. Multi-gigabyte, and they are NVIDIA's files, not this project's.
+*_Patched/
+*_Patched_*/
+Display.Driver/
+
+# Local editor / tooling state.
+.claude/settings.local.json
+
+# Windows shell cruft.
+Thumbs.db
+desktop.ini
+
+# Note: Chameleon-Patcher.exe is deliberately NOT ignored. It is committed so the tool can be
+# downloaded and run without a build step; Source\Build.ps1 regenerates it from source.
