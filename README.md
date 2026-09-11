@@ -2,14 +2,11 @@
 
 <img src="Assets/Chameleon.png" alt="Chameleon Patcher" width="120" align="right">
 
-Project Chameleon patches a stock NVIDIA driver package so it installs and works properly on GPUs
-the package normally locks out — chiefly laptop RTX 20-, 30- and 40-series and RTX-Ada mobile
-parts that NVIDIA restricts to laptop-OEM-specific driver releases. (Blackwell coverage is
-essentially nil: one `DEV_2D00` entry, under a null subsystem ID that real hardware is unlikely
-to report.) This is the standard "run the
-desktop driver on my laptop GPU" enthusiast unlock, done reproducibly: point the tool at a
-downloaded driver `.exe` and it unpacks, patches, verifies, re-signs and repackages it, on any
-driver version.
+Project Chameleon patches a stock NVIDIA driver package so it installs and works properly on PCIe graphic cards 
+equipped mobile GPUs  — chiefly laptop RTX 20-, 30- and 40-series and RTX-Ada mobile
+packed by Chinese manufacturers. This is the enthusiast unlock, done reproducibly: 
+point the tool at a downloaded driver `.exe` and it unpacks, patches, verifies, 
+re-signs and repackages it, on any driver version.
 
 Two independent gates have to come off for an unlocked GPU to work, and the patcher handles both:
 
