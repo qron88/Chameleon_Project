@@ -14,9 +14,6 @@ Certificates/
 *_Patched_*/
 Display.Driver/
 
-# Local editor / tooling state.
-.claude/settings.local.json
-
 # Windows shell cruft.
 Thumbs.db
 desktop.ini
