@@ -20,8 +20,8 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Project Chameleon")]
 [assembly: AssemblyDescription("NVIDIA driver GPU-unlock patcher")]
 [assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
-[assembly: AssemblyInformationalVersion("1.0.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyInformationalVersion("1.0.1")]
 
 namespace ChameleonPatcherGui
 {
@@ -38,8 +38,12 @@ namespace ChameleonPatcherGui
 
     public class MainForm : Form
     {
-        private const int CollapsedHeight = 434;
-        private const int ExpandedHeight = 684;
+        // The collapsed window ends with a dedicated status row BELOW the button row. The two
+        // must not overlap: the status label used to sit at ClientSize.Height - 25, which put it
+        // on top of the "Show details" / "Open log folder" buttons, and its text rendered over
+        // them the moment a run finished.
+        private const int CollapsedHeight = 458;
+        private const int ExpandedHeight = 706;
 
         private TextBox txtDriverPath;
         private TextBox txtCertPath;
@@ -183,7 +187,7 @@ namespace ChameleonPatcherGui
             btnOpenLog.FlatAppearance.BorderSize = 0;
             btnOpenLog.Click += (s, e) => OpenLogLocation();
 
-            detailsPanel = new Panel { Left = 20, Top = 440, Width = 525, Height = ExpandedHeight - CollapsedHeight - 30, Visible = false };
+            detailsPanel = new Panel { Left = 20, Top = 462, Width = 525, Height = ExpandedHeight - CollapsedHeight - 30, Visible = false };
             txtLog = new TextBox
             {
                 Multiline = true,
@@ -196,11 +200,14 @@ namespace ChameleonPatcherGui
             };
             detailsPanel.Controls.Add(txtLog);
 
+            // Fixed position in the status row below the buttons (which end at ~435). Deliberately
+            // NOT derived from ClientSize.Height: the window grows when details expand, and a
+            // bottom-anchored label would then land inside the log panel.
             lblStatus = new Label
             {
                 Text = "",
                 Left = 20,
-                Top = ClientSize.Height - 25,
+                Top = 438,
                 Width = 525,
                 Height = 20,
                 ForeColor = System.Drawing.Color.DarkRed
@@ -220,7 +227,6 @@ namespace ChameleonPatcherGui
             bool expand = !detailsPanel.Visible;
             detailsPanel.Visible = expand;
             ClientSize = new System.Drawing.Size(ClientSize.Width, expand ? ExpandedHeight : CollapsedHeight);
-            lblStatus.Top = ClientSize.Height - 25;
             btnToggleDetails.Text = expand ? "▲ Hide details" : "▼ Show details";
         }
 
@@ -303,19 +309,30 @@ namespace ChameleonPatcherGui
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     CreateNoWindow = true,
-                    StandardOutputEncoding = Encoding.UTF8
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
                 };
 
                 using (var proc = Process.Start(psi))
                 {
-                    string stdout = proc.StandardOutput.ReadToEnd();
+                    // Drain BOTH streams while the child runs. The pipeline's Write-Host banners
+                    // land on stderr in a redirected, non-interactive context; if stderr were
+                    // never read, a child that filled the stderr buffer would block on write and
+                    // never exit, and the stdout read below would hang the GUI with no reason.
+                    // Waiting with a timeout BEFORE consuming the streams is also what makes the
+                    // 20 s bound real - reading to the end first only returns once the child has
+                    // already exited, so a timeout checked afterwards can never fire.
+                    var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+                    var stderrTask = proc.StandardError.ReadToEndAsync();
                     if (!proc.WaitForExit(20000))
                     {
                         try { proc.Kill(); } catch { }
                         return null;
                     }
+                    stdoutTask.Wait();
+                    stderrTask.Wait();
                     if (proc.ExitCode != 0) return null;
-                    return stdout;
+                    return stdoutTask.Result;
                 }
             }
             catch
@@ -510,7 +527,7 @@ namespace ChameleonPatcherGui
         {
             // Read back from the assembly rather than hardcoding, so bumping the attributes above
             // is the only edit a release needs. Informational version is preferred because it
-            // carries the plain "1.0.0" rather than the four-part file version.
+            // carries the plain "1.0.1" rather than the four-part file version.
             try
             {
                 Assembly asm = Assembly.GetExecutingAssembly();
@@ -826,6 +843,11 @@ namespace ChameleonPatcherGui
 
             SetRunning(false);
             FinishLog(exitCode, exitCode == 0 ? "success" : "FAILED");
+            // The password has already travelled to the child (environment variable) and is
+            // recorded as supplied-or-not in the log header; don't leave it sitting in the box
+            // afterwards. Retyping it for a retry is the price of not keeping a signing
+            // password on screen.
+            txtPassword.Clear();
 
             if (exitCode == 0)
             {
