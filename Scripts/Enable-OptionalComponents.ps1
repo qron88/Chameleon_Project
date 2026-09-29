@@ -171,7 +171,7 @@ foreach ($key in $whitelist.PSObject.Properties.Name) {
 
         if ($addedHere -gt 0) {
             if ($PSCmdlet.ShouldProcess($r.Path, "Write component feature flags")) {
-                Set-Content -Path $r.Path -Value $lines -Encoding UTF8
+                Write-InfLines -Path $r.Path -Lines $lines
             }
             $totalAdded += $addedHere
         }

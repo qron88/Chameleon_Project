@@ -19,10 +19,14 @@
                                actually ships, since NVIDIA renames them between builds
     Resolve-SigningCertificate - work out which certificate to sign with, preferring a
                                passwordless key already in the certificate store
+    Remove-OldDriverPatchCerts - remove old driver-patch signing certs from Cert:\CurrentUser\My,
+                                protecting the one you sign with (the safe half of cert cleanup)
     Get-LocalNvidiaGpu       - the display-class NVIDIA GPUs in this machine, with DEV/SUBSYS
                                already parsed out
     Test-WhitelistCoversLocalGpu - whether any GPU in this machine is one whitelist.json
                                actually unlocks, which is what a pruned build depends on
+    Write-InfLines           - rewrite an INF (or any text file) preserving its original
+                               UTF-8 BOM state, so a patch never changes the file's encoding
 
   Resolution is memoized for the lifetime of the dot-sourcing script and re-validated with
   Test-Path on each hit, so an SDK that is updated or removed mid-run cannot leave a stale
@@ -459,4 +463,82 @@ function Resolve-SigningCertificate {
     }
 
     return $null
+}
+
+function Remove-OldDriverPatchCerts {
+    <#
+      Removes old driver-patch signing certificates from Cert:\CurrentUser\My, protecting the
+      one this run signs with. This is the safe, automatic half of certificate cleanup: it only
+      touches the per-user My store, needs no elevation, and withdraws no trust, so it cannot
+      break an already-patched package. The destructive half - withdrawing trust from the Root /
+      CA / TrustedPublisher stores - stays opt-in via Remove-DriverPatchCert.ps1, because that
+      needs elevation and means catalogs signed by the removed certificate stop validating.
+
+      New-DriverSigningCert.ps1 mints a fresh certificate on every run and never removed the
+      old ones, so repeated use left a growing pile of self-signed signing keys here. This gets
+      that pile back down to the one certificate you actually use.
+
+      Enumeration and removal go through the cert: provider (Get-ChildItem / Remove-Item) rather
+      than the X509Store class, because on some machines X509Store.Open('ReadWrite') is refused
+      (access denied) even though the provider can remove the certificate just fine.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$KeepThumbprint,
+        # Must cover every name this project has ever issued certificates under, matching
+        # Remove-DriverPatchCert.ps1, or an old certificate becomes invisible to the cleanup and
+        # quietly accumulates again. Add to this list rather than replacing it.
+        [string[]]$SubjectPattern = @('*Chameleon*', '*Driver Patch*', '*FrankenDriver*')
+    )
+
+    $keep = $KeepThumbprint.ToUpperInvariant()
+    $toRemove = @()
+    foreach ($c in @(Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue)) {
+        if ($c.Thumbprint.ToUpperInvariant() -eq $keep) { continue }
+        $matched = $false
+        foreach ($p in $SubjectPattern) {
+            if ($c.Subject -like $p) { $matched = $true; break }
+        }
+        if ($matched) { $toRemove += $c }
+    }
+    if ($toRemove.Count -eq 0) {
+        Write-Host "  No old patch certificates to remove from Cert:\CurrentUser\My." -ForegroundColor DarkGray
+        return
+    }
+    $failed = 0
+    foreach ($c in $toRemove) {
+        try {
+            Remove-Item ("Cert:\CurrentUser\My\" + $c.Thumbprint) -ErrorAction Stop
+        }
+        catch {
+            Write-Warning ("  FAILED   " + $c.Thumbprint + " : " + $_.Exception.Message)
+            $failed++
+        }
+    }
+    $done = $toRemove.Count - $failed
+    Write-Host ("  Removed " + $done + " old patch certificate(s) from Cert:\CurrentUser\My" + $(if ($failed) { ", " + $failed + " failed" } else { "" }) + ":") -ForegroundColor DarkGray
+    foreach ($c in $toRemove) {
+        Write-Host ("    " + $c.Thumbprint + "  " + $c.Subject) -ForegroundColor DarkGray
+    }
+}
+
+function Write-InfLines {
+    <#
+      Rewrites a text file (used for INFs) from a line array, PRESERVING the file's original
+      UTF-8 BOM state.
+
+      Set-Content -Encoding UTF8 always writes a BOM, but NVIDIA's stock INFs are BOM-less UTF-8,
+      and the rest of this toolkit already writes BOM-less (setup.cfg, .nvi). A patch that
+      silently flips an INF's encoding is an unnecessary diff in a signed package - Inf2Cat and
+      the installer both tolerate either, but the catalog should be built from files that differ
+      from stock only where the patch intended. So detect the first three bytes of the file
+      being rewritten and match that state.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][array]$Lines
+    )
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    $enc = New-Object System.Text.UTF8Encoding($hasBom)
+    [System.IO.File]::WriteAllLines($Path, $Lines, $enc)
 }

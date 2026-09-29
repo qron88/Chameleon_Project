@@ -170,6 +170,10 @@ param(
     [switch]$SkipTimestamp,
 
     [switch]$NonInteractive,
+    # Don't remove old driver-patch signing certificates from Cert:\CurrentUser\My at the end
+    # of the run. By default the pipeline prunes the pile of self-signed signing keys left by
+    # repeated runs, keeping only the certificate this run signed with.
+    [switch]$KeepAllOldCerts,
 
     [string]$SignToolPath,
     [string]$Inf2CatPath
@@ -498,6 +502,15 @@ else {
     Write-Host "    Import-PfxCertificate -FilePath `"$PfxPath`" -CertStoreLocation Cert:\CurrentUser\My" -ForegroundColor DarkGray
 }
 
+# Automatically prune the pile of old driver-patch signing certificates from
+# Cert:\CurrentUser\My, so repeated runs don't leave a growing stack of self-signed signing
+# keys. The certificate this run signed with is protected; everything else matching the patch
+# subject patterns is removed. Safe: per-user My store only, no elevation, no trust withdrawal,
+# so it cannot break an already-patched package. Trust-store cleanup (the destructive half)
+# stays opt-in via Remove-DriverPatchCert.ps1. Skip with -KeepAllOldCerts.
+if ($signingCert -and -not $KeepAllOldCerts) {
+    Remove-OldDriverPatchCerts -KeepThumbprint $signingCert.Thumbprint
+}
 Step-Banner "Rebuilding + signing catalog"
 $signArgs = @{
     DisplayDriverPath = (Join-Path $OutputPath "Display.Driver")

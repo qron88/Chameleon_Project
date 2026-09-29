@@ -52,6 +52,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot "PatchToolDiscovery.ps1")
+
 if (-not (Test-Path $DisplayDriverPath)) { throw "Path not found: $DisplayDriverPath" }
 
 $RmKeyLine = "HKR,,RM1457588,%REG_DWORD%,1"
@@ -97,7 +99,7 @@ Get-ChildItem -Path $DisplayDriverPath -Filter "*.inf" | ForEach-Object {
     }
 
     if ($patchedHere -gt 0) {
-        Set-Content -Path $path -Value $lines -Encoding UTF8
+        Write-InfLines -Path $path -Lines $lines
         Write-Host ("  {0}: added RM1457588 to {1} section(s)" -f $_.Name, $patchedHere)
         $totalPatched += $patchedHere
         $totalFiles++

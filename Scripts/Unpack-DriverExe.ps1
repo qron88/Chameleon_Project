@@ -5,7 +5,7 @@
 .DESCRIPTION
   NVIDIA driver downloads are a 7-Zip SFX: a small stub/config block followed by a plain 7z
   archive. This just shells out to a 7z-compatible CLI to extract it - no custom offset math
-  needed for extraction (that's only required for repacking, see Repack-DriverExe.ps1).
+  needed.
 
 .PARAMETER ExePath
   Path to the downloaded driver .exe.
@@ -24,19 +24,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Find-SevenZip {
-    $candidates = @(
-        "$env:LOCALAPPDATA\Microsoft\WindowsApps\7z.exe",
-        "${env:ProgramFiles}\7-Zip\7z.exe",
-        "${env:ProgramFiles(x86)}\7-Zip\7z.exe"
-    )
-    foreach ($c in $candidates) {
-        if (Test-Path $c) { return $c }
-    }
-    $cmd = Get-Command 7z.exe -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    throw "No 7z-compatible CLI found (checked WindowsApps alias, 7-Zip Program Files, and PATH). Install 7-Zip or NanaZip."
-}
+# Reuse the shared 7z discovery instead of a second, simpler copy. That copy used to skip the
+# NanaZip candidate, so a NanaZip-only machine passed the pipeline's preflight (which does check
+# NanaZip) but then failed here, after the run had already started.
+. (Join-Path $PSScriptRoot "PatchToolDiscovery.ps1")
 
 if (-not (Test-Path $ExePath)) { throw "Not found: $ExePath" }
 if (Test-Path $OutputPath) { throw "Output path already exists: $OutputPath - remove it or choose a different path." }

@@ -218,7 +218,7 @@ function Patch-InfFile {
 
     if ($addedCount -gt 0) {
         if ($PSCmdlet.ShouldProcess($Path, "Write patched INF")) {
-            Set-Content -Path $Path -Value $lines -Encoding UTF8
+            Write-InfLines -Path $Path -Lines $lines
         }
     }
     return $addedCount

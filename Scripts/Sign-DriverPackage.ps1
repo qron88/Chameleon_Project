@@ -30,7 +30,7 @@
   Timestamping is best-effort. It is attempted first, and if the timestamp server is unreachable
   the catalog is signed WITHOUT a timestamp and a warning is printed, rather than failing the run.
   An un-timestamped signature stops validating once the signing certificate itself expires, which
-  for a local 10-year test-signing cert is not a practical concern.
+  for a local 3-year test-signing cert is not a practical concern.
 
   This script does NOT modify any system trust store or enable Windows Test Mode - see README.md
   for the (separate, explicit) steps required for Windows to actually trust the result.
