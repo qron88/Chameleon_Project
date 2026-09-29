@@ -7,6 +7,44 @@ All notable changes to Project Chameleon are recorded here. The format follows
 The version is declared in the assembly attributes at the top of `Source\Chameleon-Patcher.cs`
 and nowhere else; see [Version](README.md#version).
 
+## [1.0.1] - 2026-09-18
+
+### Added
+
+- **Automatic cleanup of old signing keys.** Every pipeline run now prunes the pile of old
+  driver-patch signing certificates from `Cert:\CurrentUser\My`, keeping only the certificate that
+  run signed with. This is the safe half of certificate cleanup: per-user, no elevation, and it
+  withdraws no trust, so it cannot break an already-patched package. Pass `-KeepAllOldCerts` to
+  opt out. The destructive half — withdrawing trust from the Root / CA / TrustedPublisher stores —
+  remains opt-in via `Remove-DriverPatchCert.ps1`.
+
+### Fixed
+
+- **7z discovery in `Unpack-DriverExe.ps1` skipped NanaZip.** The unpack step carried its own
+  simplified `Find-SevenZip` that did not check the NanaZip candidate, so a machine with only
+  NanaZip installed passed the pipeline's preflight (which does check NanaZip) but then failed at
+  extraction, after the run had already started. The unpack step now reuses the shared
+  `Find-SevenZip` from `PatchToolDiscovery.ps1` via dot-source, so preflight and extraction always
+  agree on which 7z CLI to use.
+- **INF patches silently flipped the file's BOM state.** `Set-Content -Encoding UTF8` always writes
+  a UTF-8 BOM, but NVIDIA's stock INFs are BOM-less UTF-8, so a patch that rewrote an INF added a
+  BOM the stock file did not have - an unnecessary encoding diff in a signed package. The patching
+  scripts now rewrite INFs through a shared `Write-InfLines` helper (in `PatchToolDiscovery.ps1`)
+  that detects the file's original BOM state and matches it. `Add-ExtraGpuSupport.ps1`,
+  `Add-RmCapabilityOverride.ps1` and `Enable-OptionalComponents.ps1` all use it now.
+- **GUI status label rendered over the buttons.** The status label was positioned at
+  `ClientSize.Height - 25`, which put it on top of the "Show details" / "Open log folder" buttons
+  the moment a run finished, its text rendering over them. It now sits at a fixed position in a
+  dedicated status row below the buttons, and the window heights were adjusted to make room.
+- **GUI could hang when the child filled the stderr buffer.** The GUI read only stdout and never
+  drained stderr. In a redirected, non-interactive context the pipeline's `Write-Host` banners land
+  on stderr, so a child that filled the stderr buffer would block on write and never exit, hanging
+  the GUI with no reason. The GUI now drains both streams concurrently and waits for the 20 s
+  timeout before consuming them, so the bound is real rather than checked after the fact.
+- **Signing password lingered in the box after a run.** The password field is now cleared once a
+  run finishes, so a signing password is not left sitting on screen. Retyping it for a retry is the
+  price of not keeping it visible.
+
 ## [1.0.0] - 2026-09-11
 
 First public release. Everything below describes the state of the toolkit at that point rather

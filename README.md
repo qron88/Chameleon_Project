@@ -2,18 +2,24 @@
 
 <img src="Assets/Chameleon.png" alt="Chameleon Patcher" width="120" align="right">
 
-Project Chameleon patches a stock NVIDIA driver package so it installs and works properly on PCIe graphic cards 
-equipped mobile GPUs  — chiefly laptop RTX 20-, 30- and 40-series and RTX-Ada mobile
-packed by Chinese manufacturers. This is the enthusiast unlock, done reproducibly: 
-point the tool at a downloaded driver `.exe` and it unpacks, patches, verifies, 
-re-signs and repackages it, on any driver version.
+Project Chameleon patches a stock NVIDIA driver package so it installs and works properly on GPUs
+the package normally does not recognize — chiefly desktop PCI-E expansion cards that carry a
+mobile GPU core (laptop RTX 20-, 30- and 40-series and RTX-Ada mobile parts) transplanted onto a
+desktop form factor by third-party manufacturers. These are not standard laptop GPUs in a laptop,
+nor standard desktop GPUs: they are mobile silicon on a desktop card, a combination the stock
+desktop driver's INF whitelist does not cover, so the driver will not install or enumerate them
+as-is. (Blackwell coverage is essentially nil: one `DEV_2D00` entry, under a null subsystem ID
+that real hardware is unlikely to report.) This is the standard "make the desktop driver see my
+transplanted mobile GPU" enthusiast unlock, done reproducibly: point the tool at a downloaded
+driver `.exe` and it unpacks, patches, verifies and re-signs it, leaving a plain folder behind,
+on any driver version.
 
 Two independent gates have to come off for an unlocked GPU to work, and the patcher handles both:
 
 - **The INF-level PCI ID whitelist.** 61 device/subsystem-ID entries are added to the driver's
   INFs — 58 to `Display.Driver\nv_dispi.inf` (the main desktop INF) and 3 to `nvami.inf` (the
   ASUS OEM INF). All additions, no removals. Most are **generic/OEM subsystem IDs**
-  (`SUBSYS_000010DE`, `SUBSYS_44494D50`, `SUBSYS_00000000`); a few are specific real laptop
+  (`SUBSYS_000010DE`, `SUBSYS_44494D50`, `SUBSYS_00000000`); a few are specific real OEM
   subsystem IDs (MSI/ASUS/Lenovo). This is what lets the driver install and the device enumerate.
 - **The driver's internal Resource-Manager check.** One registry override,
   `HKR,,RM1457588,%REG_DWORD%,1`, is added to every `nv_miscBase_addreg` AddReg section across the
@@ -26,7 +32,8 @@ therefore installs only on a machine that trusts that certificate and has Window
 mode on - see [Trusting the certificate](#trusting-the-certificate).
 
 `Scripts\whitelist.json` is the data-driven form of those 61 PCI ID whitelist entries (device ID,
-subsystem ID, description, and a captured INF section body to use as a template).
+subsystem ID, description, and a captured INF section body to use as a template), originally
+derived by diffing a stock `Original_Nvidia_595.79...` package against a hand-patched one.
 
 ## Project layout
 
@@ -81,7 +88,7 @@ script that regenerates the `.ico` and `.png` from it.
 | `Chameleon-Patcher.exe` | GUI wrapper around the pipeline below - see [GUI](#gui). Carries the project version in its Win32 version resource. |
 | `Source\Chameleon-Patcher.cs` | The GUI's source. Version attributes sit at the top of the file and are the single place the release number is declared - see [Version](#version). |
 | `Source\Build.ps1` | Rebuilds the `.exe` into the project root with `csc.exe` and prints the version resource it produced. |
-| `Scripts\Invoke-DriverPatchPipeline.ps1` | All-in-one: unpack → patch → sign → add the installer checkbox. Takes either a raw downloaded `.exe` or an already-unpacked folder; result is always a plain folder. |
+| `Scripts\Invoke-DriverPatchPipeline.ps1` | All-in-one: unpack → patch → sign → add the installer checkbox, and prune old signing keys from `Cert:\CurrentUser\My` (see `-KeepAllOldCerts`). Takes either a raw downloaded `.exe` or an already-unpacked folder; result is always a plain folder. |
 | `Scripts\Unpack-DriverExe.ps1` | Extracts a downloaded driver `.exe` (a 7-Zip SFX) into a plain folder. |
 | `Scripts\Add-ExtraGpuSupport.ps1` | Applies `whitelist.json` to **any** stock `Display.Driver` folder — current or future NVIDIA driver versions. Does not hardcode section numbers, so it survives INF renumbering between releases, and resolves INF *filenames* by stem so it survives them being renamed too — see [When NVIDIA renames the INFs](#when-nvidia-renames-the-infs). |
 | `Scripts\Add-RmCapabilityOverride.ps1` | Adds the `RM1457588` registry override to every `nv_miscBase_addreg__*` section in every driver INF - fixes VRAM size misreporting and broken compute on whitelisted GPUs. See [below](#why-vram-size--compute-needs-a-second-fix). |
@@ -90,7 +97,7 @@ script that regenerates the `.ico` and `.png` from it.
 | `Scripts\Test-DriverPatch.ps1` | Verifies a package really was patched, and is run **before signing** so a silently-unpatched package can't be signed and shipped as finished. See [The verification gate](#the-verification-gate). Also runnable standalone against any package. |
 | `Scripts\New-DriverSigningCert.ps1` | Generates a fresh, locally-owned self-signed code-signing cert (does **not** touch system trust stores). The key is **non-exportable** and stays in `Cert:\CurrentUser\My`, so there is no `.pfx` and no password at all. `-Exportable` opts into a portable `.pfx`. Defaults to a 3-year life. |
 | `Scripts\Sign-DriverPackage.ps1` | Rebuilds `nv_disp.cat` from the patched INFs (`Inf2Cat.exe`) and signs it (`signtool.exe`) with your cert. Signs **without any password** when the key is in your certificate store — see [Signing without a password](#signing-without-a-password). |
-| `Scripts\PatchToolDiscovery.ps1` | Shared lookup for the external tools (7-Zip/NanaZip, `Inf2Cat.exe`, `signtool.exe`), dot-sourced by the others. The pipeline uses it to check every tool up front, so a missing SDK fails in seconds instead of after a multi-GB copy. Also owns the one GPU-detection routine the prune step, the output-folder tag and the pruned-build gate all share. |
+| `Scripts\PatchToolDiscovery.ps1` | Shared lookup for the external tools (7-Zip/NanaZip, `Inf2Cat.exe`, `signtool.exe`), dot-sourced by the others. The pipeline uses it to check every tool up front, so a missing SDK fails in seconds instead of after a multi-GB copy. Also owns the one GPU-detection routine the prune step, the output-folder tag and the pruned-build gate all share, and the `Remove-OldDriverPatchCerts` routine the pipeline calls to prune old signing keys from `Cert:\CurrentUser\My` on every run. |
 | `Scripts\Add-SetupCertOption.ps1` | Adds a "Chameleon GPU cert." component to `setup.exe`'s Custom Installation Options screen, **ticked by default** and still user-selectable; `-Unchecked` restores opt-in. The label lives in `templates\GpuUnlockCert.nvi.template`, the same string in every locale. |
 | `Scripts\Approve-DriverPatchCert.ps1` | Standalone alternative to the installer checkbox: trusts the cert via a separate, explicit script you run yourself. Adds `Root` (makes the chain work) and `TrustedPublisher` (installs without a device-software prompt). No longer writes the redundant `CA` entry. |
 | `Scripts\Remove-DriverPatchCert.ps1` | The counterpart to the above. Inventories every patch certificate and which stores it sits in, and removes the ones you pick. Read-only until you ask it to delete. See [Cleaning up trusted certificates](#cleaning-up-trusted-certificates). |
@@ -147,8 +154,8 @@ The version is declared once, as assembly attributes at the top of `Source\Chame
 
 ```csharp
 [assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
-[assembly: AssemblyInformationalVersion("1.0.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyInformationalVersion("1.0.1")]
 ```
 
 Everything else reads that one declaration back, so the number appears in three places and cannot
@@ -157,7 +164,7 @@ drift between them:
 **1. The window title bar**, which is the quickest check and makes a screenshot self-identifying:
 
 ```
-Chameleon Patcher 1.0.0
+Chameleon Patcher 1.0.1
 ```
 
 **2. The file's Win32 version resource.** `csc.exe` folds the attributes in by itself - there is no
@@ -173,7 +180,7 @@ literal, so a log and the binary that wrote it cannot disagree:
 ```
 === Chameleon Patcher - patch log ===
 started        : 2026-09-11 10:41:02 +02:00
-version        : 1.0.0
+version        : 1.0.1
 ```
 
 The log line matters because a patched driver package carries no trace of which build of this tool
@@ -458,7 +465,7 @@ patching zero entries took 391.6 s, all 61 took 384.9 s, and one took 372.5 s. T
 the cost is in the INFs and the binaries, not in the device lines added to them.
 
 **The result is specific to the hardware in the machine that built it** and will not install on
-other vendors' laptops, which is why it is opt-in rather than the default.
+other vendors' cards, which is why it is opt-in rather than the default.
 
 In the GUI this is the **"Build for this PC only"** checkbox, unticked by default to match the
 command line. The choice belongs to whoever *builds* the package: by the time `setup.exe` runs the
@@ -487,14 +494,14 @@ The two options are opposites here, so the same machine gives them opposite answ
 This was found by running both on a box with an RTX 5070 Ti. `DEV_2C05` is a desktop Blackwell
 part the stock generic INF already carries a bare `DEV` line for, and it is not in
 `whitelist.json` at all. The pruned run nonetheless completed: it kept `nv_dispig.inf` because
-that INF matches the 5070 Ti, spliced in 58 laptop-GPU device lines that nothing on that machine
+that INF matches the 5070 Ti, spliced in 58 mobile-GPU device lines that nothing on that machine
 can ever match, added the RM override to 17 sections, reported `verification PASSED`, and signed
 the result with an untrusted certificate. What came out was NVIDIA's own driver for a GPU that
 already worked, needing Test Signing mode to install. Every step reported success and the unlock
 was a no-op.
 
 The universal run on the same machine is the *correct* use of it - all 43 INFs, all 61 entries,
-installable on the laptop that actually has the locked GPU. So the gate is on the pruned path
+installable on the card that actually has the locked GPU. So the gate is on the pruned path
 only, and a universal build is never questioned.
 
 Detection failing is not the same as "not a target": if no NVIDIA display GPU can be read at all
@@ -706,7 +713,7 @@ briefly visible on signtool's command line.
 unreachable the catalog is still signed, with a warning, instead of failing the whole run. Pass
 `-SkipTimestamp` to skip the attempt entirely and sign fully offline. The only thing an
 un-timestamped signature loses is validity past the signing certificate's own expiry, which for a
-local 10-year test-signing certificate is not a practical concern.
+local 3-year test-signing certificate is not a practical concern.
 
 ## Why VRAM size / compute needs a second fix
 
@@ -852,6 +859,14 @@ accumulates as an untracked trusted root.
 
 ## Cleaning up trusted certificates
 
+**What the pipeline does for you now.** On every run, the pipeline prunes the pile of old
+signing *keys* from `Cert:\CurrentUser\My`, keeping only the certificate that run signed with
+(pass `-KeepAllOldCerts` to opt out). That is the safe half of certificate cleanup: per-user, no
+elevation, and it withdraws no trust, so it cannot break an already-patched package. What remains
+below is the destructive half — withdrawing *trust* from the Root / CA / TrustedPublisher stores —
+which needs elevation and means catalogs signed by the removed certificate stop validating, so it
+stays opt-in.
+
 Trusting a certificate is not a one-off cost you pay and forget: each trusted entry is a
 self-signed authority your machine will accept code from, kernel drivers included, until you take
 it back out. Because every `New-DriverSigningCert.ps1` run used to mint a *new* certificate and
@@ -900,7 +915,7 @@ pnputil /add-driver "<name>_Patched\Display.Driver\nv_dispi.inf" /install
 
 or run `setup.exe` from the patched package root for the full NVIDIA App installer flow.
 
-Only install this on a laptop/desktop whose GPU is actually one of the newly-whitelisted device
+Only install this on a machine whose GPU is actually one of the newly-whitelisted device
 IDs in `whitelist.json` — installing it elsewhere just gives you an INF with extra entries that
 don't match your hardware, no effect either way.
 
