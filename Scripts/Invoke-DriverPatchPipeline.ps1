@@ -357,6 +357,12 @@ $defaultCer = Join-Path $certificatesDir "DriverPatchSigning.cer"
 # `signtool /sha1` and never ask for anything - on this run or any future driver release.
 $cerCandidates = @()
 if ($PfxPath) { $cerCandidates += [System.IO.Path]::ChangeExtension($PfxPath, '.cer') }
+# Thumbprint-named .cer files (newest first) take priority: New-DriverSigningCert.ps1 names each
+# exported certificate DriverPatchSigning_<thumbprint>.cer, so the most recently minted one is
+# the one this run should sign with. The legacy fixed-name DriverPatchSigning.cer stays as the
+# last candidate, so machines that only have the old file behave exactly as before.
+$cerCandidates += @(Get-ChildItem -Path $certificatesDir -Filter "DriverPatchSigning_*.cer" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName })
 $cerCandidates += $defaultCer
 
 $signingCert = Resolve-SigningCertificate -Thumbprint $CertThumbprint -CerPathCandidates $cerCandidates

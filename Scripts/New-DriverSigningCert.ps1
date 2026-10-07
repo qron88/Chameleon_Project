@@ -77,7 +77,13 @@ $cert = New-SelfSignedCertificate `
     -NotAfter (Get-Date).AddYears($ValidityYears) `
     -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")   # Extended Key Usage: Code Signing
 
-$cerPath = Join-Path $OutputDir "DriverPatchSigning.cer"
+# Named with the thumbprint so every minted certificate has its own unambiguous public file.
+# The legacy fixed name DriverPatchSigning.cer is no longer written here: overwriting it on
+# every run meant minting a new certificate silently re-pointed the file away from the one you
+# had trusted. An existing DriverPatchSigning.cer from an older version keeps working - the
+# pipeline and Approve-DriverPatchCert.ps1 both check the thumbprint-named files first and fall
+# back to the legacy name.
+$cerPath = Join-Path $OutputDir ("DriverPatchSigning_" + $cert.Thumbprint + ".cer")
 Export-Certificate -Cert $cert -FilePath $cerPath | Out-Null
 
 Write-Host "Created certificate: $($cert.Subject)" -ForegroundColor Green

@@ -44,7 +44,16 @@ $ErrorActionPreference = 'Stop'
 # script is specifically meant to be run standalone/directly, so this would otherwise bite real
 # usage every time.
 if (-not $CerPath) {
-    $CerPath = Join-Path (Split-Path $PSScriptRoot -Parent) "Certificates\DriverPatchSigning.cer"
+    $certDir = Join-Path (Split-Path $PSScriptRoot -Parent) "Certificates"
+    $CerPath = Join-Path $certDir "DriverPatchSigning.cer"
+    if (-not (Test-Path $CerPath)) {
+        # Newer versions of New-DriverSigningCert.ps1 name the export DriverPatchSigning_<thumbprint>.cer
+        # and no longer write the legacy fixed name. When the legacy file is absent, the most
+        # recently minted certificate is the one this script is being asked to trust.
+        $newest = Get-ChildItem -Path $certDir -Filter "DriverPatchSigning_*.cer" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($newest) { $CerPath = $newest.FullName }
+    }
 }
 
 if (-not (Test-Path $CerPath)) { throw "Certificate not found: $CerPath" }

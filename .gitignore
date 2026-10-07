@@ -1,0 +1,19 @@
+# Build artifact (Source\Build.ps1 writes this to the project root)
+Chameleon-Patcher.exe
+
+# Generated at runtime
+Logs/
+Certificates/
+
+# Patched driver output folders, in case a run happens inside the repo
+*_Patched/
+*_Patched_*/
+
+# Tool state
+.claude/
+
+# Local backup archives
+backup/
+
+# Windows
+Thumbs.db

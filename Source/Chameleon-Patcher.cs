@@ -20,8 +20,8 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Project Chameleon")]
 [assembly: AssemblyDescription("NVIDIA driver GPU-unlock patcher")]
 [assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
-[assembly: AssemblyInformationalVersion("1.0.1")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
+[assembly: AssemblyInformationalVersion("1.0.2")]
 
 namespace ChameleonPatcherGui
 {
@@ -527,7 +527,7 @@ namespace ChameleonPatcherGui
         {
             // Read back from the assembly rather than hardcoding, so bumping the attributes above
             // is the only edit a release needs. Informational version is preferred because it
-            // carries the plain "1.0.1" rather than the four-part file version.
+            // carries the plain "x.y.z" rather than the four-part file version.
             try
             {
                 Assembly asm = Assembly.GetExecutingAssembly();

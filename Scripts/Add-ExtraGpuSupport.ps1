@@ -150,7 +150,11 @@ function Patch-InfFile {
         }
 
         # Does the target already whitelist the SAME bare device id under some other/no subsystem?
-        $sameDevPattern = "PCI\\VEN_10DE&DEV_$dev(&SUBSYS_[0-9A-F]{8})?\s*$"
+        # The line may end right after DEV/SUBSYS, or it may carry an extra qualifier
+        # (e.g. &CC_030000) - accept a following '&' as well as whitespace/end-of-line, so a
+        # stock line with an extra qualifier still counts as "already whitelisted" and the
+        # existing section is reused instead of a fresh one being created from the template.
+        $sameDevPattern = "PCI\\VEN_10DE&DEV_$dev(&SUBSYS_[0-9A-F]{8})?(\s|&|$)"
         $sameDevLine = $lines | Where-Object { $_ -match $sameDevPattern } | Select-Object -First 1
 
         $targetSection = $null

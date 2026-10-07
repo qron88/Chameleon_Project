@@ -67,7 +67,8 @@ Chameleon_Project\
 │  ├─ whitelist.json
 │  └─ templates\GpuUnlockCert.nvi.template
 └─ Certificates\            <- created automatically the first time a cert is needed
-   ├─ DriverPatchSigning.cer   <- public cert; this is all the toolkit needs
+   ├─ DriverPatchSigning_<thumbprint>.cer  <- public cert, one file per minted certificate
+   ├─ DriverPatchSigning.cer   <- legacy fixed name (versions before 1.0.2); still honoured
    └─ DriverPatchSigning.pfx   <- only if you asked for one (-Exportable)
 ```
 
@@ -103,7 +104,7 @@ script that regenerates the `.ico` and `.png` from it.
 | `Scripts\Remove-DriverPatchCert.ps1` | The counterpart to the above. Inventories every patch certificate and which stores it sits in, and removes the ones you pick. Read-only until you ask it to delete. See [Cleaning up trusted certificates](#cleaning-up-trusted-certificates). |
 | `Scripts\whitelist.json` | The device/subsystem whitelist data the patcher applies. |
 | `Scripts\templates\GpuUnlockCert.nvi.template` | The verified-working installer-component manifest `Add-SetupCertOption.ps1` copies into each patched package. |
-| `Certificates\DriverPatchSigning.cer` / `.pfx` | Your signing certificate (created on first use). |
+| `Certificates\DriverPatchSigning_<thumbprint>.cer` / `.pfx` | Your signing certificate (created on first use). Versions before 1.0.2 wrote a fixed-name `DriverPatchSigning.cer`; both names are honoured. |
 
 Unpacking a downloaded `.exe` needs a 7z-compatible CLI - this machine has NanaZip (a 7-Zip-
 compatible Store app), auto-detected via the `7z.exe` WindowsApps alias. A plain 7-Zip install
@@ -154,8 +155,8 @@ The version is declared once, as assembly attributes at the top of `Source\Chame
 
 ```csharp
 [assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
-[assembly: AssemblyInformationalVersion("1.0.1")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
+[assembly: AssemblyInformationalVersion("1.0.2")]
 ```
 
 Everything else reads that one declaration back, so the number appears in three places and cannot
@@ -164,7 +165,7 @@ drift between them:
 **1. The window title bar**, which is the quickest check and makes a screenshot self-identifying:
 
 ```
-Chameleon Patcher 1.0.1
+Chameleon Patcher 1.0.2
 ```
 
 **2. The file's Win32 version resource.** `csc.exe` folds the attributes in by itself - there is no
@@ -180,7 +181,7 @@ literal, so a log and the binary that wrote it cannot disagree:
 ```
 === Chameleon Patcher - patch log ===
 started        : 2026-09-11 10:41:02 +02:00
-version        : 1.0.1
+version        : 1.0.2
 ```
 
 The log line matters because a patched driver package carries no trace of which build of this tool
@@ -342,7 +343,7 @@ cd Scripts
 .\Test-DriverPatch.ps1 -DisplayDriverPath "610.88_Patched\Display.Driver"
 .\New-DriverSigningCert.ps1
 .\Sign-DriverPackage.ps1 -DisplayDriverPath "610.88_Patched\Display.Driver"
-.\Add-SetupCertOption.ps1 -PackageRoot "610.88_Patched" -CerPath "..\Certificates\DriverPatchSigning.cer"
+.\Add-SetupCertOption.ps1 -PackageRoot "610.88_Patched" -CerPath "..\Certificates\DriverPatchSigning_<thumbprint>.cer"
 ```
 
 `Sign-DriverPackage.ps1` needs no certificate arguments once `New-DriverSigningCert.ps1` has run
@@ -690,9 +691,10 @@ signtool sign /sha1 <thumbprint> /fd SHA256 nv_disp.cat
 ```
 
 That is what the pipeline now does by default. It works out the thumbprint on its own by reading
-the **public** `Certificates\DriverPatchSigning.cer`, which needs no password, and then checking
-whether the matching private key is in your store. The `.pfx` is therefore only a portable backup,
-needed when signing on a *different* machine.
+the **public** `Certificates\DriverPatchSigning_<thumbprint>.cer` (the most recently minted one,
+falling back to the legacy fixed-name `DriverPatchSigning.cer`), which needs no password, and
+then checking whether the matching private key is in your store. The `.pfx` is therefore only a
+portable backup, needed when signing on a *different* machine.
 
 There is a real security reason to prefer this and not only a convenience one. `signtool` has no
 way to read a `.pfx` password from stdin, so the `/f` + `/p` form has to put the password on a
@@ -782,8 +784,8 @@ is the path to prefer because you watch it happen and it is the one actually ver
 **2. Manually**, if you'd rather see the raw commands:
 
 ```powershell
-certutil -addstore Root             "Certificates\DriverPatchSigning.cer"
-certutil -addstore TrustedPublisher "Certificates\DriverPatchSigning.cer"
+certutil -addstore Root             "Certificates\DriverPatchSigning_<thumbprint>.cer"
+certutil -addstore TrustedPublisher "Certificates\DriverPatchSigning_<thumbprint>.cer"
 ```
 
 `Root` is what makes a self-signed signature chain at all, and is the only one strictly required.

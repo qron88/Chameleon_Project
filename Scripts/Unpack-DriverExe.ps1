@@ -38,9 +38,20 @@ Write-Host "Using: $sevenZip"
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 
 Write-Host "Extracting $ExePath ..." -ForegroundColor Cyan
-& $sevenZip x $ExePath "-o$OutputPath" -y | Out-Host
-if ($LASTEXITCODE -ne 0) {
-    throw "7z extraction failed with exit code $LASTEXITCODE"
+try {
+    & $sevenZip x $ExePath "-o$OutputPath" -y | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "7z extraction failed with exit code $LASTEXITCODE"
+    }
+}
+catch {
+    # A failed extraction leaves a PARTIAL folder behind, and the "Output path already exists"
+    # guard at the top of this script would then turn the next attempt into an instant failure.
+    # Remove the partial folder so a re-run starts clean, then rethrow the original error.
+    if (Test-Path $OutputPath) {
+        Remove-Item $OutputPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    throw
 }
 
 $hasSetup = Test-Path (Join-Path $OutputPath "setup.exe")

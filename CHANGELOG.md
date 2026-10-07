@@ -7,6 +7,46 @@ All notable changes to Project Chameleon are recorded here. The format follows
 The version is declared in the assembly attributes at the top of `Source\Chameleon-Patcher.cs`
 and nowhere else; see [Version](README.md#version).
 
+## [1.0.2] - 2026-10-06
+
+### Fixed
+
+- **`Add-SetupCertOption.ps1`'s restore path always failed verification.** `$disposition` was
+  assigned only in the branch that writes `setup.cfg` fresh, but the structural check after the
+  commit compares the written disposition against that variable on BOTH paths. On the restore
+  path (a previous run interrupted after the `setup.cfg` edit, component folder missing) the
+  variable was `$null`, so the check always threw - and the rollback then deleted the folder the
+  script had just restored, leaving the package in the same broken state with no way out. The
+  variable is now defined before the branch, so the restore path verifies against the intended
+  disposition.
+- **The installer checkbox re-added the redundant `CA` trust entry.** `templates\GpuUnlockCert.nvi.template`
+  still ran `certutil -addstore CA` in both its install and repair phases, even though the project
+  deliberately stopped writing the `CA` store for self-signed certificates (see
+  `Approve-DriverPatchCert.ps1` and the README) - so every package built with the default
+  pipeline re-created the redundant second trusted-authority entry. The two `CA` phases are
+  removed from the template; only the `Root` entry remains, and the component's description text
+  no longer claims a "root/intermediate CA".
+- **`Unpack-DriverExe.ps1` left a partial folder behind after a failed extraction.** The output
+  folder was created before 7z ran, so an extraction that failed partway (corrupt archive, full
+  disk) left a partial folder that made the next run die instantly on the "Output path already
+  exists" guard. The extraction is now wrapped so a failure removes the partial folder before
+  rethrowing, and a re-run starts clean.
+
+### Changed
+
+- **`New-DriverSigningCert.ps1` exports `DriverPatchSigning_<thumbprint>.cer`** instead of
+  overwriting the fixed-name `DriverPatchSigning.cer` on every run. Each minted certificate now
+  has its own unambiguous public file, and minting a new certificate no longer silently re-points
+  the old file. The pipeline checks the thumbprint-named files (newest first) before the legacy
+  fixed name, and `Approve-DriverPatchCert.ps1` falls back to the most recently minted one when
+  the legacy name is absent - so existing `DriverPatchSigning.cer` files keep working unchanged.
+- **`Add-ExtraGpuSupport.ps1`'s section-reuse check now sees past extra line qualifiers.** The
+  pattern that looks for an already-whitelisted bare device id required the line to end right
+  after `DEV`/`SUBSYS`, so a stock line carrying an extra qualifier (e.g. `&CC_030000`) was
+  missed and a fresh section family was created from the template instead of reusing the
+  existing one. The pattern now also accepts a following `&`, so the reuse optimization applies
+  to those lines too.
+
 ## [1.0.1] - 2026-09-18
 
 ### Added

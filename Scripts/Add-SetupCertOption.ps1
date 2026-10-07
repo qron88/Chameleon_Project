@@ -103,6 +103,13 @@ Write-Host "Adding GpuUnlockCert component to $PackageRoot" -ForegroundColor Cya
 $templatePath = Join-Path $PSScriptRoot "templates\GpuUnlockCert.nvi.template"
 if (-not (Test-Path $templatePath)) { throw "Template not found: $templatePath" }
 
+# Defined BEFORE the if/else below, not inside the else-branch: the structural verification after
+# the commit compares the written disposition against this variable, and it runs on BOTH paths -
+# including the restore path, where setup.cfg already declares the component and the else-branch
+# never executes. Defined only in the else-branch, it was $null on that path and the check
+# always threw, and the rollback then deleted the folder the script had just restored.
+$disposition = if ($Unchecked) { 'optional' } else { 'default' }
+
 if ($cfgPresent) {
     Write-Host "  setup.cfg already declares the component - only the files need restoring." -ForegroundColor DarkGray
 }
@@ -118,7 +125,6 @@ if (-not $installMatch.Success) {
     throw "Could not find an <install> element in setup.cfg. This package's format differs from what this script was verified against - inspect setup.cfg manually and adjust before proceeding (do not guess at a different insertion point blindly)."
 }
 
-$disposition = if ($Unchecked) { 'optional' } else { 'default' }
 $subPackageXml = '<sub-package disposition="' + $disposition + '" hidden="false" name="GpuUnlockCert"><properties/><options/><constraints/></sub-package>'
 $indent = $installMatch.Groups[2].Value
 $cfg = $installRx.Replace(
