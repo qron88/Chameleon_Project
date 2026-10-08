@@ -1,0 +1,5 @@
+# Normalize line endings so the behavior is explicit and consistent across machines,
+# independent of each clone's local core.autocrlf setting. Text files are stored as LF
+# in the repo and checked out as CRLF in the working tree (the natural choice for this
+# Windows-focused toolkit: PowerShell scripts, .NET source, INF templates).
+* text=auto eol=crlf

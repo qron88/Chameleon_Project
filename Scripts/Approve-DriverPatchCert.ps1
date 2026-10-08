@@ -24,8 +24,10 @@
   Requires an elevated PowerShell session (writing machine trust stores needs admin rights).
 
 .PARAMETER CerPath
-  Path to the certificate to trust. Defaults to DriverPatchSigning.cer in the "Certificates"
-  folder next to "Scripts".
+  Path to the certificate to trust. Defaults to the certificate the pipeline signs with: among
+  the .cer files in the "Certificates" folder next to "Scripts" (DriverPatchSigning_<thumbprint>.cer
+  newest first, then the legacy DriverPatchSigning.cer), the first whose private key is in
+  Cert:\CurrentUser\My - or, on a machine without the key, simply the first that exists.
 
 .PARAMETER SkipTrustedPublisher
   Only add the Root entry. You will get a device-software trust prompt during install.
@@ -38,21 +40,29 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot "PatchToolDiscovery.ps1")
+
 # $PSScriptRoot is unreliable inside a param() default value when this script is launched as a
 # fresh process (powershell.exe -File ..., e.g. double-clicked or run via "Run with PowerShell")
 # - confirmed empty there even though it's reliably set by this point in the script body. This
 # script is specifically meant to be run standalone/directly, so this would otherwise bite real
 # usage every time.
 if (-not $CerPath) {
-    $certDir = Join-Path (Split-Path $PSScriptRoot -Parent) "Certificates"
-    $CerPath = Join-Path $certDir "DriverPatchSigning.cer"
-    if (-not (Test-Path $CerPath)) {
-        # Newer versions of New-DriverSigningCert.ps1 name the export DriverPatchSigning_<thumbprint>.cer
-        # and no longer write the legacy fixed name. When the legacy file is absent, the most
-        # recently minted certificate is the one this script is being asked to trust.
-        $newest = Get-ChildItem -Path $certDir -Filter "DriverPatchSigning_*.cer" -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($newest) { $CerPath = $newest.FullName }
+    # The same candidate order the pipeline signs with. On the machine that signs, the certificate
+    # to trust is the one whose key is here - not merely the newest or the legacy-named file, which
+    # can be an older certificate the pipeline no longer uses. On a machine without the key (the
+    # target PC, with only the .cer files copied over) the first existing candidate is used.
+    $existing = @(Get-SigningCerCandidates -CertificatesDir (Join-Path (Split-Path $PSScriptRoot -Parent) "Certificates") |
+        Where-Object { Test-Path -LiteralPath $_ })
+    $withKey = Resolve-SigningCertificate -CerPathCandidates $existing
+    if ($withKey) {
+        $CerPath = @($existing | Where-Object { (Get-CerThumbprint -Path $_) -eq $withKey.Thumbprint })[0]
+    }
+    elseif ($existing.Count -gt 0) {
+        $CerPath = $existing[0]
+    }
+    if (-not $CerPath) {
+        throw "No DriverPatchSigning*.cer found in the Certificates folder. Pass -CerPath, or run the pipeline once on the signing machine - it re-exports the .cer of the certificate it signs with."
     }
 }
 

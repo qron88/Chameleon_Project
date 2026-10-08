@@ -23,6 +23,18 @@
 			<arg value="&quot;${{SubPackageDirectory}}\GpuUnlockCert.cer&quot;"/>
 			<success value="0"/>
 		</exe>
+		<exe phase="InstallGpuUnlockCertTrustedPublisher" name="${{SystemDirectory}}\certutil.exe" when="install" progress="120" condition="!RepairMode" autoTick="200">
+			<arg value="-addstore"/>
+			<arg value="TrustedPublisher"/>
+			<arg value="&quot;${{SubPackageDirectory}}\GpuUnlockCert.cer&quot;"/>
+			<success value="0"/>
+		</exe>
+		<exe phase="InstallGpuUnlockCertTrustedPublisher_repair" name="${{SystemDirectory}}\certutil.exe" when="install" progress="120" condition="RepairMode" autoTick="200">
+			<arg value="-addstore"/>
+			<arg value="TrustedPublisher"/>
+			<arg value="&quot;${{SubPackageDirectory}}\GpuUnlockCert.cer&quot;"/>
+			<success value="0"/>
+		</exe>
 	</phases>
 	<strings>
 		<string name="title" value="Chameleon GPU cert."/>
@@ -36,14 +48,14 @@
 			<string name="InstallSafeModeBlockedMessage" value="${{title}} cannot be installed in safe mode."/>
 			<string name="ErrorInstallerAlreadyRunning" value="Other installations are running. Finish the other installations then try again."/>
 			<string name="InstallNotNeeded" value="Installation of ${{title}} not needed."/>
-			<string name="InstallOnlyText" value="This installs a locally-generated certificate as a trusted root so the modified, self-signed graphics driver catalog in this package is accepted by Windows. This affects certificate trust for this entire machine, not just this driver. Leave unchecked if you don't want that."/>
+			<string name="InstallOnlyText" value="This installs a locally-generated certificate as a trusted root and trusted publisher so the modified, self-signed graphics driver catalog in this package is accepted by Windows without a further prompt. This affects certificate trust for this entire machine, not just this driver. Leave unchecked if you don't want that."/>
 		</localized>
 		<localized locale="0x0415">
 			<string name="title" value="Chameleon GPU cert."/>
 			<string name="InstallSafeModeBlockedMessage" value="Nie mozna zainstalowac ${{title}} w trybie awaryjnym."/>
 			<string name="ErrorInstallerAlreadyRunning" value="Uruchomione sa inne programy instalacyjne. Zakoncz dzialanie innych programow instalacyjnych i sprobuj ponownie."/>
 			<string name="InstallNotNeeded" value="Instalacja ${{title}} nie jest konieczna."/>
-			<string name="InstallOnlyText" value="Ta opcja instaluje lokalnie wygenerowany certyfikat jako zaufany korzen (Root), aby zmodyfikowany, samodzielnie podpisany katalog sterownika graficznego z tego pakietu zostal zaakceptowany przez system Windows. Dotyczy to zaufania do certyfikatow dla calego tego komputera, nie tylko tego sterownika. Pozostaw niezaznaczone, jesli tego nie chcesz."/>
+			<string name="InstallOnlyText" value="Ta opcja instaluje lokalnie wygenerowany certyfikat jako zaufany korzen (Root) i zaufanego wydawce (TrustedPublisher), aby zmodyfikowany, samodzielnie podpisany katalog sterownika graficznego z tego pakietu zostal zaakceptowany przez system Windows bez dodatkowego pytania. Dotyczy to zaufania do certyfikatow dla calego tego komputera, nie tylko tego sterownika. Pozostaw niezaznaczone, jesli tego nie chcesz."/>
 		</localized>
 	</strings>
 </nvi>

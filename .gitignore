@@ -1,6 +1,3 @@
-# Build artifact (Source\Build.ps1 writes this to the project root)
-Chameleon-Patcher.exe
-
 # Generated at runtime
 Logs/
 Certificates/

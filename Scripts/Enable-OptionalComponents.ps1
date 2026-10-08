@@ -44,6 +44,9 @@
 .PARAMETER Flags
   The INF feature flags to ensure. Defaults to the PhysX and NVIDIA App ones.
 
+.PARAMETER PrunedInf
+  Whitelist INF names the prune step removed on purpose; their absence is a note, not a warning.
+
 .PARAMETER SkipInstallerSelectable
   Leave setup.cfg alone. The INF flags are still applied, but the NVIDIA App stays locked on
   rather than becoming a row the user can untick.
@@ -60,7 +63,9 @@ param(
 
     [string[]]$Flags = @('NVSupportPhysx', 'NVSupportGFExperienceUDA'),
 
-    [switch]$SkipInstallerSelectable
+    [switch]$SkipInstallerSelectable,
+
+    [string[]]$PrunedInf = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -85,7 +90,12 @@ foreach ($key in $whitelist.PSObject.Properties.Name) {
     $entries = $whitelist.$key
     $resolved = @(Resolve-WhitelistInf -DisplayDriverPath $displayDriver -InfName $key)
     if ($resolved.Count -eq 0) {
-        Write-Warning "Neither $key nor a same-stem variant is present - skipping its $($entries.Count) entries."
+        if ($PrunedInf -contains $key) {
+            Write-Host "$key was pruned from this package - its $($entries.Count) entries do not apply." -ForegroundColor DarkGray
+        }
+        else {
+            Write-Warning "Neither $key nor a same-stem variant is present - skipping its $($entries.Count) entries."
+        }
         continue
     }
 
@@ -106,25 +116,26 @@ foreach ($key in $whitelist.PSObject.Properties.Name) {
                 }
                 continue
             }
-            if ($lines[$i] -match '=\s*([^,]+?)\s*,\s*PCI\\VEN_10DE&DEV_') {
-                $t = $Matches[1].Trim()
+            $parsed = Get-InfDeviceLine -Line $lines[$i]
+            if ($parsed) {
+                $t = $parsed.Section
                 if (-not $usage.ContainsKey($t)) { $usage[$t] = 0 }
                 $usage[$t]++
             }
         }
         if ($current) { $bounds[$current].End = $lines.Count }
 
-        # Which sections do the whitelisted devices actually point at?
+        # Which sections do the whitelisted devices actually point at? Every line for the entry
+        # counts, not just the first: each [NVIDIA_Devices...] block has its own line, and they
+        # may point at different sections. Matching is the patcher's own rule (Mode Entry).
         $targets = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         foreach ($e in $entries) {
-            if ($e.subsys) {
-                $pat = '^\s*%[^%]+%\s*=\s*([^,]+?)\s*,\s*PCI\\VEN_10DE&DEV_' + [regex]::Escape($e.dev) + '&SUBSYS_' + [regex]::Escape($e.subsys) + '\s*$'
-            }
-            else {
-                $pat = '^\s*%[^%]+%\s*=\s*([^,]+?)\s*,\s*PCI\\VEN_10DE&DEV_' + [regex]::Escape($e.dev) + '\s*$'
-            }
-            foreach ($l in $lines) {
-                if ($l -match $pat) { [void]$targets.Add($Matches[1].Trim()); break }
+            $from = 0
+            while ($true) {
+                $hit = Find-InfDeviceLine -Lines $lines -Start $from -Dev $e.dev -Subsys $e.subsys -Mode Entry
+                if (-not $hit) { break }
+                [void]$targets.Add($hit.Parsed.Section)
+                $from = $hit.Index + 1
             }
         }
 
@@ -220,12 +231,23 @@ if (-not $SkipInstallerSelectable) {
                     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
                     [System.IO.File]::WriteAllText($setupCfg, $cfg.Remove($m.Index, $open.Length).Insert($m.Index, $newOpen), $utf8NoBom)
 
-                    # Verify structurally rather than trusting the replace.
-                    try { $xml = [xml](Get-Content $setupCfg -Raw -Encoding UTF8) }
-                    catch { throw "setup.cfg is no longer valid XML after the edit - restore from source. $_" }
-                    $node = @($xml.GetElementsByTagName('sub-package')) | Where-Object { $_.name -eq 'Display.NvApp' } | Select-Object -First 1
-                    if (-not $node) { throw "setup.cfg parses but Display.NvApp is gone - restore from source." }
-                    if ($node.userSelectable -ne 'true') { throw "Display.NvApp userSelectable is '$($node.userSelectable)', expected 'true'." }
+                    # Verify structurally rather than trusting the replace, and put the original
+                    # back if the edit did not come out as intended - $cfg still holds it.
+                    try {
+                        try { $xml = [xml](Get-Content $setupCfg -Raw -Encoding UTF8) }
+                        catch { throw "setup.cfg is no longer valid XML after the edit. $_" }
+                        $node = @($xml.GetElementsByTagName('sub-package')) | Where-Object { $_.name -eq 'Display.NvApp' } | Select-Object -First 1
+                        if (-not $node) { throw "setup.cfg parses but Display.NvApp is gone." }
+                        if ($node.userSelectable -ne 'true') { throw "Display.NvApp userSelectable is '$($node.userSelectable)', expected 'true'." }
+                    }
+                    catch {
+                        try {
+                            [System.IO.File]::WriteAllText($setupCfg, $cfg, $utf8NoBom)
+                            Write-Warning "setup.cfg restored to its previous contents."
+                        }
+                        catch { Write-Warning "COULD NOT restore setup.cfg - re-copy it from the source package." }
+                        throw
+                    }
                     Write-Host "NVIDIA App is now a row the user can untick (disposition stays 'default', so it starts ticked)." -ForegroundColor Green
                 }
             }

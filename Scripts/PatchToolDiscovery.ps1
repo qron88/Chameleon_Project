@@ -17,10 +17,16 @@
                                stderr become a terminating error
     Resolve-WhitelistInf     - map a whitelist.json INF name onto the file this driver release
                                actually ships, since NVIDIA renames them between builds
+    Get-SigningCerCandidates - the public .cer files to try, in the one order every script uses
     Resolve-SigningCertificate - work out which certificate to sign with, preferring a
                                passwordless key already in the certificate store
+    Save-SigningCerIfMissing - write the public .cer for a certificate found only in the store
     Remove-OldDriverPatchCerts - remove old driver-patch signing certs from Cert:\CurrentUser\My,
                                 protecting the one you sign with (the safe half of cert cleanup)
+    Get-InfDeviceLine        - parse an INF models line into its token, install section and
+                               NVIDIA hardware IDs
+    Test-InfDeviceIdMatch    - the single rule for "does this hardware ID match DEV/SUBSYS",
+                               shared by the patcher, the prune step and the verification gate
     Get-LocalNvidiaGpu       - the display-class NVIDIA GPUs in this machine, with DEV/SUBSYS
                                already parsed out
     Test-WhitelistCoversLocalGpu - whether any GPU in this machine is one whitelist.json
@@ -34,6 +40,13 @@
 #>
 
 $script:PatchToolCache = @{}
+
+# Every subject name this project has ever issued signing certificates under: '*Chameleon*' is the
+# current name, '*Driver Patch*' the previous one, '*FrankenDriver*' the hand-patched package this
+# was reverse-engineered from. Shared by the store search in Resolve-SigningCertificate and by
+# Remove-OldDriverPatchCerts, and must match Remove-DriverPatchCert.ps1's -SubjectPattern default.
+# Add to this list rather than replacing it, or an old certificate becomes invisible to both.
+$script:DriverPatchSubjectPatterns = @('*Chameleon*', '*Driver Patch*', '*FrankenDriver*')
 
 function Invoke-NativeTool {
     <#
@@ -414,6 +427,55 @@ function Resolve-WhitelistInf {
     return @()
 }
 
+function Get-SigningCerCandidates {
+    <#
+      The public .cer files to try when working out which certificate to sign with or trust, in
+      the one order the pipeline, Sign-DriverPackage.ps1 and Approve-DriverPatchCert.ps1 all use:
+
+        1. The .cer next to an explicitly passed .pfx.
+        2. DriverPatchSigning_<thumbprint>.cer files, most recently written first. That is the
+           name New-DriverSigningCert.ps1 gives every certificate it mints.
+        3. The legacy fixed name DriverPatchSigning.cer, last.
+
+      Paths are returned whether or not they exist; callers skip the missing ones.
+    #>
+    param(
+        [string]$CertificatesDir,
+        [string]$PfxPath
+    )
+    $candidates = @()
+    if ($PfxPath) { $candidates += [System.IO.Path]::ChangeExtension($PfxPath, '.cer') }
+    if ($CertificatesDir) {
+        if (Test-Path -LiteralPath $CertificatesDir) {
+            $candidates += @(Get-ChildItem -LiteralPath $CertificatesDir -Filter 'DriverPatchSigning_*.cer' -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName })
+        }
+        $candidates += (Join-Path $CertificatesDir 'DriverPatchSigning.cer')
+    }
+    return $candidates
+}
+
+function Get-CerThumbprint {
+    # Thumbprint of a public .cer file, or $null if it is missing or unreadable.
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
+    try {
+        $pub = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $Path
+        $tp = $pub.Thumbprint
+        $pub.Dispose()
+        return $tp
+    }
+    catch { return $null }
+}
+
+function Test-DriverPatchSubject {
+    param([string]$Subject)
+    foreach ($p in $script:DriverPatchSubjectPatterns) {
+        if ($Subject -like $p) { return $true }
+    }
+    return $false
+}
+
 function Resolve-SigningCertificate {
     <#
       Works out WHICH certificate this run will sign with, and whether it can be used
@@ -425,13 +487,19 @@ function Resolve-SigningCertificate {
            a .cer needs no password at all, so this is what turns a normal re-run into a
            zero-prompt one: New-SelfSignedCertificate always leaves the key in that store, so on
            the machine that generated the cert the .pfx password is simply not needed to sign.
-        3. Nothing - caller falls back to a .pfx + password, or generates a fresh cert.
+        3. With -SearchStore: a project certificate in Cert:\CurrentUser\My, found by subject,
+           with a private key, a code-signing EKU and time left on it. One already trusted in
+           LocalMachine\Root wins, then the one that expires last. This is what keeps a deleted
+           or emptied Certificates folder from looking like "no certificate at all" - the key is
+           non-exportable, so minting a new one and pruning the old would lose it for good.
+        4. Nothing - caller falls back to a .pfx + password, or generates a fresh cert.
 
       Returns $null when no usable store certificate was found.
     #>
     param(
         [string]$Thumbprint,
-        [string[]]$CerPathCandidates = @()
+        [string[]]$CerPathCandidates = @(),
+        [switch]$SearchStore
     )
 
     if ($Thumbprint) {
@@ -446,15 +514,11 @@ function Resolve-SigningCertificate {
     }
 
     foreach ($cer in $CerPathCandidates) {
-        if (-not $cer) { continue }
-        if (-not (Test-Path $cer)) { continue }
-        try {
-            $pub = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $cer
-        }
-        catch { continue }
+        $tp = Get-CerThumbprint -Path $cer
+        if (-not $tp) { continue }
         $hit = Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
             Where-Object {
-                $_.Thumbprint -eq $pub.Thumbprint -and
+                $_.Thumbprint -eq $tp -and
                 $_.HasPrivateKey -and
                 $_.NotAfter -gt (Get-Date)
             } |
@@ -462,7 +526,50 @@ function Resolve-SigningCertificate {
         if ($hit) { return $hit }
     }
 
+    if ($SearchStore) {
+        $now = Get-Date
+        $trusted = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($c in @(Get-ChildItem Cert:\LocalMachine\Root -ErrorAction SilentlyContinue)) { [void]$trusted.Add($c.Thumbprint) }
+
+        $usable = @(Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object {
+            $c = $_
+            $codeSigning = @($c.Extensions | Where-Object {
+                $_ -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension] -and
+                @($_.EnhancedKeyUsages | ForEach-Object { $_.Value }) -contains '1.3.6.1.5.5.7.3.3'
+            }).Count -gt 0
+            $c.HasPrivateKey -and $c.NotAfter -gt $now -and $codeSigning -and (Test-DriverPatchSubject $c.Subject)
+        })
+        if ($usable.Count -gt 0) {
+            return ($usable |
+                Sort-Object -Property @{ Expression = { $trusted.Contains($_.Thumbprint) }; Descending = $true },
+                                      @{ Expression = 'NotAfter'; Descending = $true } |
+                Select-Object -First 1)
+        }
+    }
+
     return $null
+}
+
+function Save-SigningCerIfMissing {
+    <#
+      Makes sure the public half of a store certificate is on disk as
+      DriverPatchSigning_<thumbprint>.cer, so Approve-DriverPatchCert.ps1 and the next run find it
+      the ordinary way. Returns the path written, or $null when a matching .cer already existed.
+      Exporting the public half needs no password and touches no private key.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Certificate,
+        [Parameter(Mandatory = $true)][string]$CertificatesDir
+    )
+    foreach ($p in (Get-SigningCerCandidates -CertificatesDir $CertificatesDir)) {
+        if ((Get-CerThumbprint -Path $p) -eq $Certificate.Thumbprint) { return $null }
+    }
+    if (-not (Test-Path -LiteralPath $CertificatesDir)) {
+        New-Item -ItemType Directory -Path $CertificatesDir -Force | Out-Null
+    }
+    $path = Join-Path $CertificatesDir ("DriverPatchSigning_" + $Certificate.Thumbprint + ".cer")
+    [System.IO.File]::WriteAllBytes($path, $Certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+    return $path
 }
 
 function Remove-OldDriverPatchCerts {
@@ -483,22 +590,14 @@ function Remove-OldDriverPatchCerts {
       (access denied) even though the provider can remove the certificate just fine.
     #>
     param(
-        [Parameter(Mandatory = $true)][string]$KeepThumbprint,
-        # Must cover every name this project has ever issued certificates under, matching
-        # Remove-DriverPatchCert.ps1, or an old certificate becomes invisible to the cleanup and
-        # quietly accumulates again. Add to this list rather than replacing it.
-        [string[]]$SubjectPattern = @('*Chameleon*', '*Driver Patch*', '*FrankenDriver*')
+        [Parameter(Mandatory = $true)][string]$KeepThumbprint
     )
 
     $keep = $KeepThumbprint.ToUpperInvariant()
     $toRemove = @()
     foreach ($c in @(Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue)) {
         if ($c.Thumbprint.ToUpperInvariant() -eq $keep) { continue }
-        $matched = $false
-        foreach ($p in $SubjectPattern) {
-            if ($c.Subject -like $p) { $matched = $true; break }
-        }
-        if ($matched) { $toRemove += $c }
+        if (Test-DriverPatchSubject $c.Subject) { $toRemove += $c }
     }
     if ($toRemove.Count -eq 0) {
         Write-Host "  No old patch certificates to remove from Cert:\CurrentUser\My." -ForegroundColor DarkGray
@@ -519,6 +618,107 @@ function Remove-OldDriverPatchCerts {
     foreach ($c in $toRemove) {
         Write-Host ("    " + $c.Thumbprint + "  " + $c.Subject) -ForegroundColor DarkGray
     }
+}
+
+function Get-InfDeviceLine {
+    <#
+      Parses one INF models-section line,
+
+          %NVIDIA_DEV.1E90% = Section001, PCI\VEN_10DE&DEV_1E90&SUBSYS_000010DE
+
+      into its %token%, its install section and the NVIDIA PCI hardware IDs it lists (a line may
+      list several, comma-separated). Returns $null for anything that is not such a line. A
+      trailing "; comment" is ignored, and every qualifier after DEV other than SUBSYS (REV_, CC_,
+      ...) is kept in Extra rather than being silently dropped or silently tolerated - what to make
+      of it is Test-InfDeviceIdMatch's decision, made the same way for every caller.
+    #>
+    param([string]$Line)
+
+    if (-not $Line -or $Line.IndexOf('VEN_10DE', [StringComparison]::OrdinalIgnoreCase) -lt 0) { return $null }
+    $body = ($Line -split ';', 2)[0]
+    if ($body -notmatch '^\s*%([^%]+)%\s*=\s*([^,]+?)\s*,\s*(.+?)\s*$') { return $null }
+    $token = $Matches[1].Trim()
+    $section = $Matches[2].Trim()
+    $rest = $Matches[3]
+
+    $ids = @()
+    foreach ($raw in ($rest -split ',')) {
+        $hw = $raw.Trim()
+        if ($hw -notmatch '^PCI\\VEN_10DE&DEV_([0-9A-Fa-f]{4})((?:&[A-Za-z]+_[0-9A-Fa-f]+)*)$') { continue }
+        $dev = $Matches[1].ToUpperInvariant()
+        $quals = $Matches[2]
+        $sub = $null
+        $extra = @()
+        foreach ($q in ($quals -split '&')) {
+            if (-not $q) { continue }
+            if (-not $sub -and $q -match '^SUBSYS_([0-9A-Fa-f]{8})$') { $sub = $Matches[1].ToUpperInvariant() }
+            else { $extra += $q.ToUpperInvariant() }
+        }
+        $ids += [PSCustomObject]@{ Dev = $dev; Subsys = $sub; Extra = $extra; HardwareId = $hw }
+    }
+    if ($ids.Count -eq 0) { return $null }
+    return [PSCustomObject]@{ Token = $token; Section = $section; Ids = $ids }
+}
+
+function Test-InfDeviceIdMatch {
+    <#
+      The single rule for whether a parsed hardware ID (from Get-InfDeviceLine) matches a device.
+      Every script that asks this question goes through here, so the patcher, the prune step, the
+      optional-components step and the verification gate can no longer disagree about it.
+
+        Entry     Is this exactly the whitelist entry DEV[/SUBSYS]? Same DEV, same SUBSYS (or both
+                  absent), and no extra qualifiers. A stock "...&SUBSYS_X&REV_A1" line only matches
+                  revision A1, so it does not count as the entry being present - the patcher adds
+                  its own line and the gate looks for exactly that.
+        Hardware  Could this line install on a device with DEV/SUBSYS? Same DEV, and either no
+                  SUBSYS (covers every subsystem) or the same SUBSYS. Extra qualifiers are
+                  tolerated: their exact values are not known here, and for the prune step keeping
+                  an INF that might match only costs time, while dropping one that does match
+                  breaks the install.
+        Device    Any line for this DEV at all, whatever its SUBSYS or qualifiers - used to find a
+                  stock install section already valid for the chip.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Id,
+        [Parameter(Mandatory = $true)][string]$Dev,
+        [string]$Subsys,
+        [Parameter(Mandatory = $true)][ValidateSet('Entry', 'Hardware', 'Device')][string]$Mode
+    )
+    if ($Id.Dev -ne $Dev) { return $false }
+    switch ($Mode) {
+        'Entry'    { return (@($Id.Extra).Count -eq 0) -and ([string]$Id.Subsys -eq [string]$Subsys) }
+        'Hardware' { return (-not $Id.Subsys) -or ($Subsys -and $Id.Subsys -eq $Subsys) }
+        'Device'   { return $true }
+    }
+}
+
+function Find-InfDeviceLine {
+    <#
+      First line in Lines[Start..End) that lists a hardware ID matching DEV/SUBSYS under Mode.
+      Returns @{ Index; Parsed } or $null. A cheap substring test runs before the regex parse,
+      since a large OEM INF has tens of thousands of lines and only a handful mention the device.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Lines,
+        [int]$Start = 0,
+        [int]$End = -1,
+        [Parameter(Mandatory = $true)][string]$Dev,
+        [string]$Subsys,
+        [Parameter(Mandatory = $true)][ValidateSet('Entry', 'Hardware', 'Device')][string]$Mode
+    )
+    if ($End -lt 0) { $End = $Lines.Count }
+    $needle = "DEV_$Dev"
+    for ($i = $Start; $i -lt $End; $i++) {
+        if ($Lines[$i].IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+        $p = Get-InfDeviceLine -Line $Lines[$i]
+        if (-not $p) { continue }
+        foreach ($id in $p.Ids) {
+            if (Test-InfDeviceIdMatch -Id $id -Dev $Dev -Subsys $Subsys -Mode $Mode) {
+                return [PSCustomObject]@{ Index = $i; Parsed = $p }
+            }
+        }
+    }
+    return $null
 }
 
 function Write-InfLines {

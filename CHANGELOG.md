@@ -7,6 +7,89 @@ All notable changes to Project Chameleon are recorded here. The format follows
 The version is declared in the assembly attributes at the top of `Source\Chameleon-Patcher.cs`
 and nowhere else; see [Version](README.md#version).
 
+## [1.0.3] - 2026-10-07
+
+### Fixed
+
+- **A run could permanently destroy the signing key it should have reused.** The pipeline found
+  its certificate only through the `.cer` files in `Certificates\`. With that folder deleted or
+  emptied, it concluded there was no certificate, minted a new one, and the old-key cleanup then
+  deleted the existing certificate from `Cert:\CurrentUser\My`. That key is non-exportable, so it
+  was gone for good, while its trust entry stayed behind in `LocalMachine\Root`. When no `.cer`
+  leads to a key, the store is now searched by subject (a valid code-signing certificate with a
+  private key, preferring one already trusted in `Root`, then the latest expiry), and the
+  missing `.cer` is re-exported. An explicit `-PfxPath` turns the search off.
+- **Old signing keys were pruned before signing, and on runs that had just minted a
+  replacement.** The cleanup now runs only after the catalog is signed, so a failed run never
+  costs a key, and it is skipped on a run that minted a new certificate.
+- **Closing the GUI mid-run did not stop the run.** The window said closing would abort the
+  patch, but the hidden `powershell.exe` and the 7z / Inf2Cat / signtool processes it started
+  kept running with nothing to report to. Closing now stops the whole process tree
+  (`taskkill /T`), logs that it did, and ignores late output from the dying child. The 20 s
+  pre-run queries also stop their full process tree when they time out.
+- **A path ending in a backslash broke the GUI's command line.** A drive root such as `D:\` was
+  quoted as `"D:\"`, which the Windows command-line rules read as an escaped quote, merging every
+  following argument into one. Arguments are now quoted by those rules (trailing backslashes
+  doubled), and a typed folder path loses a trailing separator.
+- **`Sign-DriverPackage.ps1` run on its own could not find a certificate minted by 1.0.2.** Its
+  default looked only for the legacy `DriverPatchSigning.cer`. It now uses the same candidate
+  order and store search as the pipeline.
+- **`Approve-DriverPatchCert.ps1` could trust a different certificate from the one the pipeline
+  signs with.** It preferred the legacy `DriverPatchSigning.cer` over the thumbprint-named
+  files, the opposite of the pipeline. It now uses the shared candidate order and picks the
+  certificate whose key is on the machine; on a machine without the key, the first existing
+  candidate.
+- **The patcher, the prune step, the optional-components step and the verification gate each
+  matched INF device lines by their own rule.** A stock line such as `...&SUBSYS_X&REV_A1`
+  counted as the whitelist entry for the patcher, which then skipped it, but not for the gate,
+  which then failed the run with a misleading "not correctly patched". A line with `&CC_...`
+  counted for the patcher but not for pruning, so the INF serving the GPU through such a line
+  could be pruned. All four now use one parser and one matching rule (`Get-InfDeviceLine` /
+  `Test-InfDeviceIdMatch` in `PatchToolDiscovery.ps1`), which also ignores trailing `;`
+  comments.
+- **An entry present in only one `[NVIDIA_Devices...]` block was treated as present
+  everywhere.** Each block serves a different OS target. The patcher now adds the line to every
+  block that lacks it, reusing the section the other block uses, and the gate checks every block.
+- **The installer checkbox trusted the certificate in `Root` only.** `Approve-DriverPatchCert.ps1`
+  adds `Root` and `TrustedPublisher`; the checkbox now does the same, so installing through
+  `setup.exe` does not stop at a "Would you like to install this device software?" prompt.
+- **A failed prune could not be undone.** `Remove-ForeignOemInfs.ps1` deleted INFs before
+  verifying the result, so a failure partway left them gone. They are now moved to a staging
+  folder and deleted only after verification passes; a failure moves them back and restores the
+  manifest. `Enable-OptionalComponents.ps1` likewise restores `setup.cfg` if its edit does not
+  verify.
+- **A pruned build warned about whitelist INFs it had just pruned on purpose.** On an A2000m
+  box, `-PruneForeignOemInfs` removes `nvami.inf` because its three entries are all RTX A3000m,
+  and then the whitelist step, the optional-components step and the verification gate each
+  warned that the INF was missing and that "NVIDIA may have renamed or dropped" it. Three
+  warnings on every pruned run teach you to ignore the one that matters. The pipeline now records
+  which whitelist INFs the prune step removed and passes them on (`-PrunedInf`); those are
+  reported as a note, while a whitelist INF missing for any other reason still warns. If every
+  whitelist INF was pruned, the whitelist step now says there is nothing to unlock on this PC
+  instead of suggesting the INFs were renamed.
+- **The GUI's "Select .exe..." button had its top edge clipped.** The hint label above it had no
+  explicit height, so it took the 23 px default, overlapped the top 2 px of the button and, being
+  in front of it, hid that strip including the hover highlight. The label now has a fixed height,
+  and the "Or select an unpacked folder..." button below no longer overlaps the bottom edge either.
+
+### Changed
+
+- **The GUI's signing-certificate fields are hidden unless asked for.** The normal case never
+  needs them: the key is found in the certificate store, and a PC without one gets a new
+  certificate, both without a password. The `.pfx` path and password now appear only after
+  ticking "Sign with an existing certificate from a .pfx file", with one line each saying what
+  the ticked and unticked states do; while it is unticked the fields are ignored, and unticking
+  clears the password. Starting with the box ticked but the `.pfx` file or its password missing
+  stops before the run and offers to fill them in or untick the box. When a run fails because a `.pfx`
+  password is needed, the GUI opens the fields, pre-fills the project's default `.pfx` if there
+  is one, and says what to enter. The window now lays itself out from the controls actually
+  shown, so it shrinks and grows with the `.pfx` fields and the log panel.
+- **The GUI no longer freezes while it checks the GPU and output folder before a run.** Both
+  queries now run off the UI thread, with the inputs locked until the run starts or is
+  abandoned.
+- Documentation brought in line with the code: `Add-SetupCertOption.ps1`'s header described the
+  checkbox as unticked by default, and several examples still named the legacy `.cer`.
+
 ## [1.0.2] - 2026-10-06
 
 ### Fixed

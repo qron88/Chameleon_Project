@@ -26,9 +26,10 @@
   WHAT IT KEEPS. An INF survives if any of these hold:
     - It is named in whitelist.json, i.e. it is one this toolkit patches.
     - It can match a GPU actually present in this machine. Matching follows Windows' own
-      semantics: an exact DEV+SUBSYS line, or a bare DEV line with no SUBSYS, which matches any
-      subsystem of that device. An OEM INF listing the right DEV under someone else's SUBSYS can
-      never win the install, so keeping it would be pure waste.
+      semantics: an exact DEV+SUBSYS line, or a DEV line with no SUBSYS, which matches any
+      subsystem of that device. Lines with extra qualifiers (&REV_xx, &CC_xxxxxx) are treated as
+      possible matches, so the INF is kept. An OEM INF listing the right DEV under someone else's
+      SUBSYS can never win the install, so keeping it would be pure waste.
     - You named it with -KeepInf.
 
   The package that comes out is no longer usable on other vendors' laptops. For a package you are
@@ -170,18 +171,13 @@ foreach ($inf in $allInfs) {
     # DEV line for most desktop parts - and the safety net below decides whether a GPU is covered
     # by looking for a recorded hardware match. Skipping here left that match unrecorded and made
     # a perfectly supported GPU, e.g. an RTX 5070 Ti at DEV_2C05, warn as unsupported.
-    $lines = Get-Content $inf.FullName -Encoding UTF8
+    $lines = @(Get-Content $inf.FullName -Encoding UTF8)
     foreach ($t in $uniqueTargets) {
-        # Windows matches either an exact DEV+SUBSYS line, or a bare DEV line (no SUBSYS), which
-        # covers every subsystem of that device. Anything else can never win the install.
-        $exact = $null
-        if ($t.Subsys) { $exact = 'PCI\\VEN_10DE&DEV_' + $t.Dev + '&SUBSYS_' + $t.Subsys + '\s*$' }
-        $bare = 'PCI\\VEN_10DE&DEV_' + $t.Dev + '\s*$'
-        $hit = $false
-        foreach ($l in $lines) {
-            if ($l -match $bare) { $hit = $true; break }
-            if ($exact -and $l -match $exact) { $hit = $true; break }
-        }
+        # Windows matches either an exact DEV+SUBSYS line, or a line with no SUBSYS, which covers
+        # every subsystem of that device. Lines carrying extra qualifiers (&REV_xx, &CC_xxxxxx)
+        # count as a possible match: keeping an INF that turns out not to apply only costs time,
+        # dropping one that does breaks the install. Shared rule: Test-InfDeviceIdMatch -Mode Hardware.
+        $hit = [bool](Find-InfDeviceLine -Lines $lines -Dev $t.Dev -Subsys $t.Subsys -Mode Hardware)
         if ($hit) {
             $lbl = "DEV_$($t.Dev)"
             if ($t.Subsys) { $lbl += "&SUBSYS_$($t.Subsys)" }
@@ -270,7 +266,9 @@ foreach ($n in @($keep)) {
     $p = Join-Path $displayDriver $n
     if (-not (Test-Path $p)) { continue }
     foreach ($l in (Get-Content $p -Encoding UTF8)) {
-        if ($l -match '^\s*(Include|Needs|CopyINF)\s*=\s*(.+)$') {
+        # Strip a trailing "; comment" first, or it would be read as part of the last filename.
+        $body = ($l -split ';', 2)[0]
+        if ($body -match '^\s*(Include|Needs|CopyINF)\s*=\s*(.+)$') {
             foreach ($ref in ($Matches[2] -split ',')) {
                 if ($pruneNames -contains $ref.Trim()) {
                     throw "$n references $($ref.Trim()), which is scheduled for removal. Add it with -KeepInf and re-run."
@@ -304,32 +302,54 @@ foreach ($n in $pruneNames) {
     $removedEntries += $before
 }
 
+# The INFs are MOVED into a staging folder rather than deleted, and only deleted once the result
+# has verified. A failure anywhere up to that point - a locked file, a manifest that no longer
+# parses, a manifest/disk mismatch - moves them back and restores the manifest, so the package is
+# left exactly as it was found. The staging folder sits in the package root (same volume, so a
+# move is a rename) and outside Display.Driver, so nothing that scans the driver folder sees it.
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$staging = Join-Path $PackageRoot (".prune-staging-" + [guid]::NewGuid().ToString('N'))
 $removedFiles = 0
 try {
+    New-Item -ItemType Directory -Path $staging | Out-Null
     [System.IO.File]::WriteAllText($nviPath, $nviText, $utf8NoBom)
     foreach ($f in $prune) {
-        [System.IO.File]::Delete($f.FullName)
+        [System.IO.File]::Move($f.FullName, (Join-Path $staging $f.Name))
         $removedFiles++
     }
+
+    # --- 6. Verify ----------------------------------------------------------------------------
+    try { $check = [xml](Get-Content $nviPath -Raw -Encoding UTF8) }
+    catch { throw "$nviPath is no longer valid XML after pruning. $_" }
+
+    $manifestInfs = @($check.nvi.manifest.file | ForEach-Object { $_.getAttribute('name') } | Where-Object { $_ -like '*.inf' })
+    $onDisk = @(Get-ChildItem $displayDriver -Filter *.inf -File | ForEach-Object { $_.Name })
+    $orphanEntries = @($manifestInfs | Where-Object { $onDisk -notcontains $_ })
+    $unlisted = @($onDisk | Where-Object { $manifestInfs -notcontains $_ })
+
+    if ($orphanEntries.Count) { throw "Manifest still lists INFs that are gone from disk: $($orphanEntries -join ', ')" }
+    if ($unlisted.Count)      { throw "INFs on disk are missing from the manifest: $($unlisted -join ', ')" }
 }
 catch {
-    Write-Warning "Failed partway through - restoring the manifest. Any INF already deleted must be recovered from the source package."
-    try { [System.IO.File]::WriteAllText($nviPath, $nviOriginal, $utf8NoBom) } catch { }
+    Write-Warning "Failed partway through - moving the INFs back and restoring the manifest."
+    $restoreFailed = 0
+    foreach ($s in @(Get-ChildItem -LiteralPath $staging -File -ErrorAction SilentlyContinue)) {
+        try { [System.IO.File]::Move($s.FullName, (Join-Path $displayDriver $s.Name)) }
+        catch { $restoreFailed++ }
+    }
+    try { [System.IO.File]::WriteAllText($nviPath, $nviOriginal, $utf8NoBom) }
+    catch { $restoreFailed++ }
+    if ($restoreFailed -eq 0) {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Warning "  Package restored to its state before pruning."
+    }
+    else {
+        Write-Warning "  COULD NOT fully restore the package - the remaining INFs are in $staging. Re-copy the package from source."
+    }
     throw
 }
 
-# --- 6. Verify --------------------------------------------------------------------------------
-try { $check = [xml](Get-Content $nviPath -Raw -Encoding UTF8) }
-catch { throw "$nviPath is no longer valid XML after pruning - restore the package from source. $_" }
-
-$manifestInfs = @($check.nvi.manifest.file | ForEach-Object { $_.getAttribute('name') } | Where-Object { $_ -like '*.inf' })
-$onDisk = @(Get-ChildItem $displayDriver -Filter *.inf -File | ForEach-Object { $_.Name })
-$orphanEntries = @($manifestInfs | Where-Object { $onDisk -notcontains $_ })
-$unlisted = @($onDisk | Where-Object { $manifestInfs -notcontains $_ })
-
-if ($orphanEntries.Count) { throw "Manifest still lists INFs that are gone from disk: $($orphanEntries -join ', ')" }
-if ($unlisted.Count)      { throw "INFs on disk are missing from the manifest: $($unlisted -join ', ')" }
+Remove-Item -LiteralPath $staging -Recurse -Force
 
 Write-Host ""
 Write-Host ("Removed $removedFiles INF file(s) and $removedEntries manifest entry/entries.") -ForegroundColor Green

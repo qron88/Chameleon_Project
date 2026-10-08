@@ -10,9 +10,15 @@
 
 .DESCRIPTION
   Verified working on 595.79 / installer engine 2.1002.x: adding a sub-package with
-  disposition="optional" hidden="false" hasDriver="true" renders as its own row in the
-  Custom Installation Options screen, DEFAULTS TO UNCHECKED (genuine opt-in, unlike
-  disposition="default" which pre-checks), and shows correct version columns.
+  hidden="false" hasDriver="true" renders as its own row in the Custom Installation Options
+  screen with correct version columns. disposition="default" (what this script writes unless
+  -Unchecked is passed) starts the row ticked; disposition="optional" starts it unticked. Either
+  way the user can toggle it.
+
+  Left ticked, the component runs certutil to add the certificate to the machine's Root store
+  (so the self-signed catalog chains) and TrustedPublisher store (so the driver installs without
+  a "Would you like to install this device software?" prompt) - the same two stores
+  Approve-DriverPatchCert.ps1 writes.
 
   This is the automated version of what was hand-built and confirmed against a real install of
   Patched_Nvidia_595.79-desktop-win10-win11-64bit-international-dch-whql on 2026-08-05: a
@@ -39,7 +45,7 @@
   Certificate to embed (the same one used to sign nv_disp.cat for this package).
 
 .EXAMPLE
-  .\Add-SetupCertOption.ps1 -PackageRoot "D:\NVIDIA\610.xx_Patched" -CerPath "..\Certificates\DriverPatchSigning.cer"
+  .\Add-SetupCertOption.ps1 -PackageRoot "D:\NVIDIA\610.xx_Patched" -CerPath "..\Certificates\DriverPatchSigning_<thumbprint>.cer"
 #>
 [CmdletBinding()]
 param(
@@ -248,7 +254,7 @@ $state = if ($Unchecked) { "UNCHECKED (opt-in)" } else { "CHECKED (the user can 
 Write-Host "Done. setup.cfg now offers 'Chameleon GPU cert.' under Custom Installation" -ForegroundColor Green
 Write-Host "Options, defaulting to $state." -ForegroundColor Green
 if (-not $Unchecked) {
-    Write-Host "Leaving it ticked adds a self-signed certificate to the machine-wide Root store," -ForegroundColor Yellow
+    Write-Host "Leaving it ticked adds a self-signed certificate to the machine-wide Root and TrustedPublisher stores," -ForegroundColor Yellow
     Write-Host "which affects what all software on the box accepts, not just this driver." -ForegroundColor Yellow
 }
 Write-Host "Verified structurally: the sub-package is declared and Display.Driver depends on it." -ForegroundColor DarkGray

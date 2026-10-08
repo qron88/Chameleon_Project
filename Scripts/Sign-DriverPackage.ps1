@@ -96,14 +96,10 @@ Write-Host "Using signtool: $signtool"
 # Preference: a key already in Cert:\CurrentUser\My (no password anywhere). If the caller passed
 # only a .pfx, still try to find its key in the store first - same certificate, but signing from
 # the store means the password isn't needed at all.
-$storeCert = $null
-$cerCandidates = @()
-if ($PfxPath) { $cerCandidates += [System.IO.Path]::ChangeExtension($PfxPath, '.cer') }
-# Also consider the project's own default cert, so running this script standalone with no
-# certificate arguments at all still signs passwordlessly when the key is in the store.
-$cerCandidates += (Join-Path (Split-Path $PSScriptRoot -Parent) "Certificates\DriverPatchSigning.cer")
-
-$storeCert = Resolve-SigningCertificate -Thumbprint $CertThumbprint -CerPathCandidates $cerCandidates
+# Same candidate order and store search as the pipeline, so running this script standalone with no
+# certificate arguments at all signs with the same certificate the pipeline would pick.
+$cerCandidates = Get-SigningCerCandidates -CertificatesDir (Join-Path (Split-Path $PSScriptRoot -Parent) "Certificates") -PfxPath $PfxPath
+$storeCert = Resolve-SigningCertificate -Thumbprint $CertThumbprint -CerPathCandidates $cerCandidates -SearchStore:(-not $PfxPath)
 
 $plainPwd = $null
 $pwdPtr   = [IntPtr]::Zero

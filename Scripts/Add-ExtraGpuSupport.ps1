@@ -12,19 +12,27 @@
 
   Designed to be re-run against future NVIDIA driver dumps: it does NOT hardcode section numbers.
   For each whitelist entry it:
-    1. Skips it if the target INF already whitelists that exact DEV+SUBSYS combo (NVIDIA may add
-       it upstream in a later release).
-    2. If the same bare DEV id already has an entry under a different subsystem in the target file,
-       reuses that entry's Section (guaranteed valid/current for that chip in this driver version).
+    1. Skips it if every [NVIDIA_Devices...] block already whitelists that exact DEV+SUBSYS
+       combo (NVIDIA may add it upstream in a later release). A block that lacks it gets it, even
+       if another block already has it.
+    2. If another block already lists the entry, or the same DEV id appears under a different
+       subsystem, reuses that line's Section (guaranteed valid/current for that chip in this
+       driver version).
     3. Otherwise creates a new, uniquely-named Section by copying the section body captured from the
        reference "Franken" package, and points the new match line at it.
-  Then adds the matching [Strings] description if missing.
+  Then adds the matching [Strings] description if missing. What counts as a match is decided by
+  Test-InfDeviceIdMatch in PatchToolDiscovery.ps1, the same rule the verification gate applies.
 
 .PARAMETER DisplayDriverPath
   Path to the "Display.Driver" folder of a stock NVIDIA driver package (any version).
 
 .PARAMETER WhitelistPath
   Path to whitelist.json (defaults to the copy next to this script).
+
+.PARAMETER PrunedInf
+  Whitelist INF names (as keyed in whitelist.json) that the prune step removed on purpose. Their
+  absence is reported as a note rather than a warning. The pipeline passes this; standalone use
+  can leave it out.
 
 .PARAMETER WhatIf
   Show what would change without writing files.
@@ -37,7 +45,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$DisplayDriverPath,
 
-    [string]$WhitelistPath
+    [string]$WhitelistPath,
+
+    [string[]]$PrunedInf = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,17 +69,6 @@ if (-not (Test-Path $WhitelistPath)) {
 }
 
 $whitelist = Get-Content $WhitelistPath -Raw | ConvertFrom-Json
-
-function Get-MatchLinePattern {
-    param([string]$Dev, [string]$Subsys)
-    if ($Subsys) {
-        return "PCI\\VEN_10DE&DEV_$Dev&SUBSYS_$Subsys"
-    }
-    else {
-        # Bare device line: must not be followed by &SUBSYS (that would be a different, more specific entry)
-        return "PCI\\VEN_10DE&DEV_$Dev(\s|$)"
-    }
-}
 
 function Find-DeviceBlocks {
     param([string[]]$Lines)
@@ -142,26 +141,41 @@ function Patch-InfFile {
     foreach ($entry in $Entries) {
         $dev = $entry.dev
         $subsys = $entry.subsys
-        $pattern = Get-MatchLinePattern -Dev $dev -Subsys $subsys
-        $alreadyPresent = $lines | Where-Object { $_ -match $pattern }
-        if ($alreadyPresent) {
+
+        # Presence is judged PER [NVIDIA_Devices...] block, with the shared matching rule the
+        # verification gate also uses (Test-InfDeviceIdMatch -Mode Entry). Each block serves a
+        # different OS target, so an entry NVIDIA lists in only one of them is still missing from
+        # the others, and a line carrying an extra qualifier such as &REV_A1 is not the entry.
+        $blocks = Find-DeviceBlocks -Lines $lines
+        $lacking = @()
+        $existingSection = $null
+        foreach ($block in $blocks) {
+            $hit = Find-InfDeviceLine -Lines $lines -Start $block.StartIndex -End $block.EndIndex -Dev $dev -Subsys $subsys -Mode Entry
+            if ($hit) {
+                if (-not $existingSection) { $existingSection = $hit.Parsed.Section }
+            }
+            else {
+                $lacking += $block
+            }
+        }
+        if ($lacking.Count -eq 0) {
             $skippedCount++
             continue
         }
 
-        # Does the target already whitelist the SAME bare device id under some other/no subsystem?
-        # The line may end right after DEV/SUBSYS, or it may carry an extra qualifier
-        # (e.g. &CC_030000) - accept a following '&' as well as whitespace/end-of-line, so a
-        # stock line with an extra qualifier still counts as "already whitelisted" and the
-        # existing section is reused instead of a fresh one being created from the template.
-        $sameDevPattern = "PCI\\VEN_10DE&DEV_$dev(&SUBSYS_[0-9A-F]{8})?(\s|&|$)"
-        $sameDevLine = $lines | Where-Object { $_ -match $sameDevPattern } | Select-Object -First 1
-
-        $targetSection = $null
-        if ($sameDevLine -and ($sameDevLine -match '=\s*(Section\w+)\s*,')) {
-            $targetSection = $Matches[1]
+        # Section to point the new line at, best first:
+        #   1. the section another block already uses for this exact entry,
+        #   2. the section of any line for the same chip (other subsystem, extra qualifiers) -
+        #      guaranteed valid for that chip in this driver version,
+        #   3. a fresh section family built from the template captured in whitelist.json.
+        $targetSection = $existingSection
+        if (-not $targetSection) {
+            foreach ($block in $blocks) {
+                $same = Find-InfDeviceLine -Lines $lines -Start $block.StartIndex -End $block.EndIndex -Dev $dev -Mode Device
+                if ($same) { $targetSection = $same.Parsed.Section; break }
+            }
         }
-        else {
+        if (-not $targetSection) {
             # Fall back: create a brand new section family from the captured template.
             # NVIDIA DDInstall sections split AddService into a separate "<Section>.Services"
             # companion (and sometimes .Software/.HW/.GeneralConfigData) - Windows install
@@ -193,10 +207,10 @@ function Patch-InfFile {
             "%$keyName% = $targetSection, PCI\VEN_10DE&DEV_$dev"
         }
 
-        # Re-found each iteration because inserting lines shifts every later index.
-        $blocks = Find-DeviceBlocks -Lines $lines
-        # Insert from bottom-most block upward so earlier indices stay valid
-        foreach ($block in ($blocks | Sort-Object EndIndex -Descending)) {
+        # Only the blocks that lack the entry get the line. The template sections above were
+        # appended at the END of the file, so the block indices found before are still valid.
+        # Insert from the bottom-most block upward so earlier indices stay valid too.
+        foreach ($block in ($lacking | Sort-Object EndIndex -Descending)) {
             $lines.Insert($block.EndIndex, $matchLine)
         }
 
@@ -215,7 +229,8 @@ function Patch-InfFile {
         }
 
         $addedCount++
-        Write-Host "  + DEV_$dev$(if($subsys){"&SUBSYS_$subsys"}) -> $targetSection ($($entry.description))"
+        $partial = if ($lacking.Count -lt $blocks.Count) { " [added to $($lacking.Count) of $($blocks.Count) device blocks; the rest already had it]" } else { "" }
+        Write-Host "  + DEV_$dev$(if($subsys){"&SUBSYS_$subsys"}) -> $targetSection ($($entry.description))$partial"
     }
 
     Write-Host "  Added: $addedCount, already present: $skippedCount" -ForegroundColor Green
@@ -239,7 +254,12 @@ foreach ($prop in $whitelist.PSObject.Properties) {
     # literally silently applied nothing at all - see Resolve-WhitelistInf for the full story.
     $resolved = @(Resolve-WhitelistInf -DisplayDriverPath $DisplayDriverPath -InfName $infName)
     if ($resolved.Count -eq 0) {
-        Write-Warning "Target contains neither $infName nor any '$([System.IO.Path]::GetFileNameWithoutExtension($infName))*.inf' variant of it - skipping ($($entries.Count) entries not applied)."
+        if ($PrunedInf -contains $infName) {
+            Write-Host "  $infName was pruned from this package (none of its entries names hardware in this PC) - its $($entries.Count) entries do not apply." -ForegroundColor DarkGray
+        }
+        else {
+            Write-Warning "Target contains neither $infName nor any '$([System.IO.Path]::GetFileNameWithoutExtension($infName))*.inf' variant of it - skipping ($($entries.Count) entries not applied)."
+        }
         continue
     }
 
@@ -256,6 +276,10 @@ foreach ($prop in $whitelist.PSObject.Properties) {
 # isn't a Display.Driver folder, or NVIDIA renamed every INF we know about. Either way, carrying
 # on would hand a completely unpatched package to the signing step.
 if ($infsFound -eq 0) {
+    $allKeys = @($whitelist.PSObject.Properties | ForEach-Object { $_.Name })
+    if (@($allKeys | Where-Object { $PrunedInf -notcontains $_ }).Count -eq 0) {
+        throw "Every INF named in the whitelist ($($allKeys -join ', ')) was pruned from this package, because none of their entries names a GPU in this PC - there is nothing to unlock here. Build without -PruneForeignOemInfs to make a package for the machine that has the locked GPU."
+    }
     throw "None of the INFs named in the whitelist ($(($whitelist.PSObject.Properties | ForEach-Object { $_.Name }) -join ', ')) exist under `"$DisplayDriverPath`", and no same-stem variant of them does either. Check the path points at a Display.Driver folder; if it does, this driver release has renamed them beyond a simple suffix and whitelist.json needs updating."
 }
 

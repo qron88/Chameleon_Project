@@ -350,22 +350,20 @@ Write-Host "  signtool: $($tools.SignTool)" -ForegroundColor DarkGray
 
 $certificatesDir = Join-Path (Split-Path $PSScriptRoot -Parent) "Certificates"
 $defaultPfx = Join-Path $certificatesDir "DriverPatchSigning.pfx"
-$defaultCer = Join-Path $certificatesDir "DriverPatchSigning.cer"
 
 # Prefer a private key that is already in Cert:\CurrentUser\My. Reading a public .cer needs no
 # password at all, so when the key for that cert is in the store we can sign with
 # `signtool /sha1` and never ask for anything - on this run or any future driver release.
-$cerCandidates = @()
-if ($PfxPath) { $cerCandidates += [System.IO.Path]::ChangeExtension($PfxPath, '.cer') }
-# Thumbprint-named .cer files (newest first) take priority: New-DriverSigningCert.ps1 names each
-# exported certificate DriverPatchSigning_<thumbprint>.cer, so the most recently minted one is
-# the one this run should sign with. The legacy fixed-name DriverPatchSigning.cer stays as the
-# last candidate, so machines that only have the old file behave exactly as before.
-$cerCandidates += @(Get-ChildItem -Path $certificatesDir -Filter "DriverPatchSigning_*.cer" -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName })
-$cerCandidates += $defaultCer
+# Get-SigningCerCandidates is the one candidate order every script shares: the .cer beside an
+# explicit .pfx, then DriverPatchSigning_<thumbprint>.cer newest first, then the legacy name.
+$cerCandidates = Get-SigningCerCandidates -CertificatesDir $certificatesDir -PfxPath $PfxPath
 
-$signingCert = Resolve-SigningCertificate -Thumbprint $CertThumbprint -CerPathCandidates $cerCandidates
+# When no .cer leads to a key - most often because the Certificates folder was deleted or emptied
+# - the store is searched by subject before anything new is minted. Without that, the run would
+# mint a fresh certificate and the old-key cleanup would then delete the existing one, and its key
+# is non-exportable, so it would be gone for good. An explicit -PfxPath turns the search off: the
+# caller has said which certificate to use.
+$signingCert = Resolve-SigningCertificate -Thumbprint $CertThumbprint -CerPathCandidates $cerCandidates -SearchStore:(-not $PfxPath)
 $generateNewCert = $false
 
 if ($signingCert) {
@@ -436,21 +434,37 @@ else {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# Whitelist INFs the prune step removed on purpose. The later steps warn about a whitelist INF
+# they cannot find, because that normally means NVIDIA renamed or dropped it - but in a pruned
+# build an INF whose entries name no hardware in this PC is removed deliberately (e.g. nvami.inf,
+# all RTX A3000m, on an A2000m box). Passing the list along turns those into plain notes, so the
+# warning keeps its meaning for a real rename.
+$prunedWhitelistInfs = @()
+
 if ($PruneForeignOemInfs) {
     # Runs FIRST, before any patching, so every later step has fewer INFs to walk: the whitelist
     # patch, the RM override, the verification gate and above all the catalog rebuild. Measured on
     # 616.86, pruning 43 INFs down to 2 took the rebuild from ~3000 s to 399 s.
+    $displayDriverDir = Join-Path $OutputPath "Display.Driver"
+    $whitelistInfNames = @((Get-Content $WhitelistPath -Raw | ConvertFrom-Json).PSObject.Properties.Name)
+    $presentBeforePrune = @($whitelistInfNames | Where-Object {
+        @(Resolve-WhitelistInf -DisplayDriverPath $displayDriverDir -InfName $_).Count -gt 0 })
+
     Step-Banner "Pruning OEM INFs that cannot match this machine"
     & (Join-Path $PSScriptRoot "Remove-ForeignOemInfs.ps1") `
         -PackageRoot $OutputPath `
         -WhitelistPath $WhitelistPath `
         -KeepInf $KeepInf
+
+    $prunedWhitelistInfs = @($presentBeforePrune | Where-Object {
+        @(Resolve-WhitelistInf -DisplayDriverPath $displayDriverDir -InfName $_).Count -eq 0 })
 }
 
 Step-Banner "Patching device/subsystem whitelist"
 & (Join-Path $PSScriptRoot "Add-ExtraGpuSupport.ps1") `
     -DisplayDriverPath (Join-Path $OutputPath "Display.Driver") `
-    -WhitelistPath $WhitelistPath
+    -WhitelistPath $WhitelistPath `
+    -PrunedInf $prunedWhitelistInfs
 
 Step-Banner "Adding RM capability override (VRAM size / compute fix)"
 & (Join-Path $PSScriptRoot "Add-RmCapabilityOverride.ps1") `
@@ -464,7 +478,8 @@ if (-not $SkipOptionalComponents) {
     Step-Banner "Enabling PhysX / NVIDIA App for the unlocked GPUs"
     & (Join-Path $PSScriptRoot "Enable-OptionalComponents.ps1") `
         -PackageRoot $OutputPath `
-        -WhitelistPath $WhitelistPath
+        -WhitelistPath $WhitelistPath `
+        -PrunedInf $prunedWhitelistInfs
 }
 
 if (-not $SkipPatchVerification) {
@@ -475,7 +490,8 @@ if (-not $SkipPatchVerification) {
     Step-Banner "Verifying the patch actually applied"
     & (Join-Path $PSScriptRoot "Test-DriverPatch.ps1") `
         -DisplayDriverPath (Join-Path $OutputPath "Display.Driver") `
-        -WhitelistPath $WhitelistPath
+        -WhitelistPath $WhitelistPath `
+        -PrunedInf $prunedWhitelistInfs
 }
 
 Step-Banner "Signing certificate"
@@ -485,6 +501,13 @@ if ($signingCert) {
     Write-Host "    Thumbprint: $($signingCert.Thumbprint)"
     Write-Host "    Expires:    $($signingCert.NotAfter)"
     Write-Host "  (remove it from Cert:\CurrentUser\My, or pass -CertThumbprint, to use a different one)" -ForegroundColor DarkGray
+    # Found through the store search rather than a .cer file: put its public half back on disk so
+    # Approve-DriverPatchCert.ps1 and the next run find it the ordinary way.
+    $restoredCer = Save-SigningCerIfMissing -Certificate $signingCert -CertificatesDir $certificatesDir
+    if ($restoredCer) {
+        Write-Host "  Its public .cer was missing from $certificatesDir - re-exported it to:" -ForegroundColor Yellow
+        Write-Host "    $restoredCer" -ForegroundColor Yellow
+    }
 }
 elseif ($generateNewCert) {
     Write-Host "  No certificate found - generating a new one in $certificatesDir"
@@ -508,15 +531,6 @@ else {
     Write-Host "    Import-PfxCertificate -FilePath `"$PfxPath`" -CertStoreLocation Cert:\CurrentUser\My" -ForegroundColor DarkGray
 }
 
-# Automatically prune the pile of old driver-patch signing certificates from
-# Cert:\CurrentUser\My, so repeated runs don't leave a growing stack of self-signed signing
-# keys. The certificate this run signed with is protected; everything else matching the patch
-# subject patterns is removed. Safe: per-user My store only, no elevation, no trust withdrawal,
-# so it cannot break an already-patched package. Trust-store cleanup (the destructive half)
-# stays opt-in via Remove-DriverPatchCert.ps1. Skip with -KeepAllOldCerts.
-if ($signingCert -and -not $KeepAllOldCerts) {
-    Remove-OldDriverPatchCerts -KeepThumbprint $signingCert.Thumbprint
-}
 Step-Banner "Rebuilding + signing catalog"
 $signArgs = @{
     DisplayDriverPath = (Join-Path $OutputPath "Display.Driver")
@@ -533,6 +547,25 @@ else {
     $signArgs['PfxPassword'] = $PfxPassword
 }
 & (Join-Path $PSScriptRoot "Sign-DriverPackage.ps1") @signArgs
+
+# Prune the pile of old driver-patch signing certificates from Cert:\CurrentUser\My, so repeated
+# runs don't leave a growing stack of self-signed signing keys. The certificate this run signed
+# with is protected; everything else matching the patch subject patterns is removed. Per-user My
+# store only, no elevation, no trust withdrawal, so it cannot break an already-patched package.
+# Trust-store cleanup stays opt-in via Remove-DriverPatchCert.ps1. Skip with -KeepAllOldCerts.
+#
+# Two deliberate limits. It runs only AFTER signing succeeded, so a failed run never costs a key.
+# And it is skipped on a run that had to mint a new certificate: the store search above found no
+# usable one, and deleting keys in the same run that replaced them leaves no way back if that was
+# a mistake. The next run, signing with the new certificate, prunes as usual.
+if ($signingCert -and -not $KeepAllOldCerts) {
+    if ($generateNewCert) {
+        Write-Host "  Old signing keys in Cert:\CurrentUser\My left in place on this run, because it minted a new certificate." -ForegroundColor DarkGray
+    }
+    else {
+        Remove-OldDriverPatchCerts -KeepThumbprint $signingCert.Thumbprint
+    }
+}
 
 if (-not $SkipSetupCertOption) {
     Step-Banner "Adding opt-in cert-trust option to installer"

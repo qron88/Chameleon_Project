@@ -29,8 +29,7 @@
   and the key name also appears inside nvlddmkm.sys and the gsp_*.bin GSP firmware images,
   confirming the driver genuinely reads it. NVIDIA's own use is exactly the case this project
   needs: an OEM-specific INF enabling full capability on hardware the generic desktop INF
-  restricts. (An earlier version of this comment claimed stock INFs never contain the key. That
-  was wrong.)
+  restricts.
 
   This script adds it to
   EVERY nv_miscBase_addreg__* section in EVERY driver INF that has one, rather than trying to

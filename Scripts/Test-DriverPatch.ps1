@@ -13,7 +13,9 @@
   were supposed to have done:
 
     1. Every INF named in whitelist.json is present, and has at least one [NVIDIA_Devices*] block.
-    2. Every whitelist entry's PCI device (+ subsystem) ID is whitelisted in that INF.
+    2. Every whitelist entry's PCI device (+ subsystem) ID is whitelisted in EVERY
+       [NVIDIA_Devices*] block of that INF, matched by the same rule the patcher uses
+       (Test-InfDeviceIdMatch in PatchToolDiscovery.ps1).
     3. Each such device line points at an install Section that actually EXISTS in the same INF.
     4. Every section a spliced-in SectionExtraGPU* body references resolves in the same INF
        (AddReg/DelReg/CopyFiles/AddService/AddSoftware targets, and Include'd files).
@@ -40,6 +42,10 @@
 .PARAMETER ReportOnly
   Print findings but never throw. Without this, any error-class finding throws.
 
+.PARAMETER PrunedInf
+  Whitelist INF names the prune step removed on purpose. Their absence is reported as a note,
+  not as a warning that NVIDIA may have renamed or dropped them.
+
 .PARAMETER SkipRmOverrideCheck
   Don't assert the RM1457588 override (use if you ran the pipeline with that step skipped).
 
@@ -55,7 +61,9 @@ param(
 
     [switch]$ReportOnly,
 
-    [switch]$SkipRmOverrideCheck
+    [switch]$SkipRmOverrideCheck,
+
+    [string[]]$PrunedInf = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -162,7 +170,12 @@ $targets = New-Object System.Collections.Generic.List[object]
 foreach ($prop in $whitelist.PSObject.Properties) {
     $resolved = @(Resolve-WhitelistInf -DisplayDriverPath $DisplayDriverPath -InfName $prop.Name)
     if ($resolved.Count -eq 0) {
-        $warnings.Add("$($prop.Name) is not in this package, and nor is any same-stem variant of it - $($prop.Value.Count) whitelist entries could not be checked. NVIDIA may have renamed or dropped this INF.")
+        if ($PrunedInf -contains $prop.Name) {
+            Write-Host "  $($prop.Name) was pruned from this package - its $(@($prop.Value).Count) entries do not apply and are not checked." -ForegroundColor DarkGray
+        }
+        else {
+            $warnings.Add("$($prop.Name) is not in this package, and nor is any same-stem variant of it - $($prop.Value.Count) whitelist entries could not be checked. NVIDIA may have renamed or dropped this INF.")
+        }
         continue
     }
     foreach ($r in $resolved) {
@@ -182,15 +195,10 @@ foreach ($t in $targets) {
     $lines = Get-Content -Path $infPath -Encoding UTF8
     $sections = Get-InfSections -Lines $lines
 
-    # Collect the union of every [NVIDIA_Devices*] block body.
-    $deviceLines = New-Object System.Collections.Generic.List[string]
-    $deviceBlockCount = 0
-    foreach ($k in $sections.Keys) {
-        if ($k -match '^NVIDIA_Devices') {
-            $deviceBlockCount++
-            foreach ($l in $sections[$k]) { $deviceLines.Add($l) }
-        }
-    }
+    # Every [NVIDIA_Devices*] block is checked on its own. Each serves a different OS target, so an
+    # entry present in one block but not another is still missing where it is not.
+    $deviceBlocks = @($sections.Keys | Where-Object { $_ -match '^NVIDIA_Devices' })
+    $deviceBlockCount = $deviceBlocks.Count
     if ($deviceBlockCount -eq 0) {
         $errors.Add("$infName has no [NVIDIA_Devices*] block at all - the whitelist patcher could not have applied anything. This INF's layout is not what the patcher expects.")
         continue
@@ -213,33 +221,29 @@ foreach ($t in $targets) {
         $subsys = $entry.subsys
         $idLabel = if ($subsys) { "DEV_$dev&SUBSYS_$subsys" } else { "DEV_$dev" }
 
-        # Match the real line shape: %token% = <Section>, PCI\VEN_10DE&DEV_xxxx[&SUBSYS_xxxxxxxx]
-        if ($subsys) {
-            $pattern = '^\s*%([^%]+)%\s*=\s*([^,]+?)\s*,\s*PCI\\VEN_10DE&DEV_' + [regex]::Escape($dev) + '&SUBSYS_' + [regex]::Escape($subsys) + '\s*$'
-        }
-        else {
-            $pattern = '^\s*%([^%]+)%\s*=\s*([^,]+?)\s*,\s*PCI\\VEN_10DE&DEV_' + [regex]::Escape($dev) + '\s*$'
-        }
-
-        $hit = $null
-        foreach ($l in $deviceLines) {
-            if ($l -match $pattern) { $hit = $Matches; break }
+        # Same matching rule as the patcher (Test-InfDeviceIdMatch -Mode Entry): this exact
+        # DEV[/SUBSYS], with no extra qualifiers, in a "%token% = <Section>, <hardware id>" line.
+        $hits = @()
+        $absentFrom = @()
+        foreach ($b in $deviceBlocks) {
+            $hit = Find-InfDeviceLine -Lines @($sections[$b]) -Dev $dev -Subsys $subsys -Mode Entry
+            if ($hit) { $hits += $hit.Parsed } else { $absentFrom += $b }
         }
 
-        if (-not $hit) {
-            $missing.Add($idLabel)
-            continue
+        if ($absentFrom.Count -gt 0) {
+            if ($absentFrom.Count -eq $deviceBlockCount) { $missing.Add($idLabel) }
+            else { $missing.Add("$idLabel (not in [$($absentFrom -join '], [')])") }
         }
-        $totalPresent++
+        if ($hits.Count -eq 0) { continue }
+        if ($absentFrom.Count -eq 0) { $totalPresent++ }
 
-        $token = $hit[1].Trim()
-        $sectionName = $hit[2].Trim()
-
-        if (-not $sections.ContainsKey($sectionName)) {
-            $badSection.Add("$idLabel -> [$sectionName] (section header absent)")
-        }
-        if (-not $stringsDefined.Contains($token)) {
-            $badToken.Add("$idLabel uses %$token% which has no [Strings] definition")
+        foreach ($p in @($hits | Sort-Object Section, Token -Unique)) {
+            if (-not $sections.ContainsKey($p.Section)) {
+                $badSection.Add("$idLabel -> [$($p.Section)] (section header absent)")
+            }
+            if (-not $stringsDefined.Contains($p.Token)) {
+                $badToken.Add("$idLabel uses %$($p.Token)% which has no [Strings] definition")
+            }
         }
     }
 
